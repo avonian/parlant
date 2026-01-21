@@ -77,7 +77,7 @@ class LiteLLMSchematicGenerator(BaseSchematicGenerator[T]):
         "adapter_id",
         "adapter_source",
     ]
-    supported_hints = supported_litellm_params + ["strict"]
+    supported_hints = supported_litellm_params + ["strict", "model_name"]
 
     def __init__(
         self,
@@ -125,13 +125,16 @@ class LiteLLMSchematicGenerator(BaseSchematicGenerator[T]):
             k: v for k, v in hints.items() if k in self.supported_litellm_params
         }
 
+        # Use hint model_name if provided, otherwise fall back to default
+        model_name = hints.get("model_name") or self.model_name
+
         t_start = time.time()
 
         response = self._client.completion(
             base_url=self.base_url,
             api_key=os.environ.get("LITELLM_PROVIDER_API_KEY"),
             messages=[{"role": "user", "content": prompt}],
-            model=self.model_name,
+            model=model_name,
             max_tokens=5000,
             response_format={"type": "json_object"},
             **litellm_api_arguments,
@@ -148,7 +151,7 @@ class LiteLLMSchematicGenerator(BaseSchematicGenerator[T]):
             json_content = json.loads(normalize_json_output(raw_content))
         except json.JSONDecodeError:
             self.logger.warning(
-                f"Invalid JSON returned by litellm/{self.model_name}:\n{raw_content})"
+                f"Invalid JSON returned by litellm/{model_name}:\n{raw_content})"
             )
             json_content = jsonfinder.only_json(raw_content)[2]
             self.logger.warning("Found JSON content within model response; continuing...")
@@ -159,7 +162,7 @@ class LiteLLMSchematicGenerator(BaseSchematicGenerator[T]):
 
             await record_llm_metrics(
                 self.meter,
-                self.model_name,
+                model_name,
                 schema_name=self.schema.__name__,
                 input_tokens=response.usage.prompt_tokens,
                 output_tokens=response.usage.completion_tokens,
@@ -174,7 +177,7 @@ class LiteLLMSchematicGenerator(BaseSchematicGenerator[T]):
                 content=content,
                 info=GenerationInfo(
                     schema_name=self.schema.__name__,
-                    model=self.id,
+                    model=f"litellm/{model_name}",
                     duration=(t_end - t_start),
                     usage=UsageInfo(
                         input_tokens=response.usage.prompt_tokens,
@@ -191,7 +194,7 @@ class LiteLLMSchematicGenerator(BaseSchematicGenerator[T]):
             )
         except ValidationError:
             self.logger.error(
-                f"JSON content returned by litellm/{self.model_name} does not match expected schema:\n{raw_content}"
+                f"JSON content returned by litellm/{model_name} does not match expected schema:\n{raw_content}"
             )
             raise
 

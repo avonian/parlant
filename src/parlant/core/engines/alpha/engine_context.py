@@ -218,6 +218,9 @@ class EngineContext:
     creation: Stopwatch = field(default_factory=Stopwatch.start)
     """A stopwatch that was started when the context was created"""
 
+    effective_model_name: Optional[str] = None
+    """The resolved model name for this agent (considering playbook inheritance)"""
+
     async def add_tool_event(
         self,
         tool_id: ToolId,

@@ -25,7 +25,10 @@ from parlant.api.common import (
     composition_mode_to_composition_mode_dto,
     example_json_content,
 )
-from parlant.core.app_modules.agents import AgentTagUpdateParamsModel, AgentDisabledRulesUpdateParamsModel
+from parlant.core.app_modules.agents import (
+    AgentTagUpdateParamsModel,
+    AgentDisabledRulesUpdateParamsModel,
+)
 from parlant.core.agents import AgentId
 from parlant.core.application import Application
 from parlant.core.common import DefaultBaseModel
@@ -110,6 +113,14 @@ AgentDisabledRulesField: TypeAlias = Annotated[
     ),
 ]
 
+AgentModelNameField: TypeAlias = Annotated[
+    str,
+    Field(
+        description="LLM model name to use for this agent (e.g., 'gpt-4o', 'claude-3-opus'). If not set, inherits from playbook or uses global default.",
+        examples=["gpt-4o", "claude-3-opus", "anthropic/claude-3-sonnet"],
+    ),
+]
+
 agent_example: ExampleJson = {
     "id": "IUCGT-lvpS",
     "name": "Haxon",
@@ -120,6 +131,7 @@ agent_example: ExampleJson = {
     "tags": ["tag1", "tag2"],
     "disabled_rules": [],
     "playbook_id": "pb_abc123",
+    "model_name": "gpt-4o",
 }
 
 
@@ -144,6 +156,7 @@ class AgentDTO(
     tags: AgentTagsField = []
     disabled_rules: AgentDisabledRulesField = []
     playbook_id: AgentPlaybookIdField | None = None
+    model_name: AgentModelNameField | None = None
 
 
 agent_creation_params_example: ExampleJson = {
@@ -153,6 +166,7 @@ agent_creation_params_example: ExampleJson = {
     "composition_mode": "fluid",
     "tags": ["tag1", "tag2"],
     "playbook_id": "pb_abc123",
+    "model_name": "gpt-4o",
 }
 
 
@@ -183,6 +197,7 @@ class AgentCreationParamsDTO(
     composition_mode: CompositionModeDTO | None = None
     tags: AgentTagsField | None = None
     playbook_id: AgentPlaybookIdField | None = None
+    model_name: AgentModelNameField | None = None
 
 
 agent_update_params_example: ExampleJson = {
@@ -191,6 +206,7 @@ agent_update_params_example: ExampleJson = {
     "max_engine_iterations": 3,
     "composition_mode": "fluid",
     "playbook_id": "pb_abc123",
+    "model_name": "gpt-4o",
 }
 
 
@@ -253,6 +269,7 @@ class AgentUpdateParamsDTO(
     composition_mode: CompositionModeDTO | None = None
     tags: AgentTagUpdateParamsDTO | None = None
     playbook_id: AgentPlaybookIdField | None = None
+    model_name: AgentModelNameField | None = None
 
 
 def create_router(
@@ -308,6 +325,7 @@ def create_router(
             tags=params.tags,
             id=params.id if params else None,
             playbook_id=PlaybookId(params.playbook_id) if params and params.playbook_id else None,
+            model_name=params.model_name if params else None,
         )
 
         return AgentDTO(
@@ -320,6 +338,7 @@ def create_router(
             tags=list(agent.tags),
             disabled_rules=list(agent.disabled_rules),
             playbook_id=agent.playbook_id,
+            model_name=agent.model_name,
         )
 
     @router.get(
@@ -359,6 +378,7 @@ def create_router(
                 tags=list(a.tags),
                 disabled_rules=list(a.disabled_rules),
                 playbook_id=a.playbook_id,
+                model_name=a.model_name,
             )
             for a in agents
         ]
@@ -407,6 +427,7 @@ def create_router(
             tags=list(agent.tags),
             disabled_rules=list(agent.disabled_rules),
             playbook_id=agent.playbook_id,
+            model_name=agent.model_name,
         )
 
     @router.patch(
@@ -462,6 +483,10 @@ def create_router(
                 PlaybookId(params.playbook_id) if params.playbook_id else None
             )
 
+        # Only pass model_name if it was explicitly set (even if to None/null)
+        if "model_name" in params.model_fields_set:
+            update_kwargs["model_name"] = params.model_name
+
         agent = await app.agents.update(**update_kwargs)  # type: ignore[arg-type]
 
         return AgentDTO(
@@ -474,6 +499,7 @@ def create_router(
             tags=list(agent.tags),
             disabled_rules=list(agent.disabled_rules),
             playbook_id=agent.playbook_id,
+            model_name=agent.model_name,
         )
 
     @router.patch(
@@ -528,6 +554,7 @@ def create_router(
             tags=list(agent.tags),
             disabled_rules=list(agent.disabled_rules),
             playbook_id=agent.playbook_id,
+            model_name=agent.model_name,
         )
 
     @router.delete(

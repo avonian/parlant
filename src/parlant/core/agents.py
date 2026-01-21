@@ -59,6 +59,7 @@ class AgentUpdateParams(TypedDict, total=False):
     max_engine_iterations: int
     composition_mode: CompositionMode
     playbook_id: Optional[PlaybookId]
+    model_name: Optional[str]
 
 
 @dataclass(frozen=True)
@@ -72,6 +73,7 @@ class Agent:
     disabled_rules: Sequence[DisabledRuleRef] = ()
     composition_mode: CompositionMode = CompositionMode.FLUID
     playbook_id: Optional[PlaybookId] = None
+    model_name: Optional[str] = None
 
 
 class AgentStore(ABC):
@@ -86,6 +88,7 @@ class AgentStore(ABC):
         tags: Optional[Sequence[TagId]] = None,
         id: Optional[AgentId] = None,
         playbook_id: Optional[PlaybookId] = None,
+        model_name: Optional[str] = None,
     ) -> Agent: ...
 
     @abstractmethod
@@ -151,6 +154,7 @@ class _AgentDocument(TypedDict, total=False):
     max_engine_iterations: int
     composition_mode: str
     playbook_id: Optional[str]
+    model_name: Optional[str]
 
 
 class _AgentTagAssociationDocument(TypedDict, total=False):
@@ -170,7 +174,7 @@ class _AgentDisabledRuleDocument(TypedDict, total=False):
 
 
 class AgentDocumentStore(AgentStore):
-    VERSION = Version.from_string("0.4.1")
+    VERSION = Version.from_string("0.4.2")
 
     def __init__(
         self,
@@ -247,6 +251,27 @@ class AgentDocumentStore(AgentStore):
 
             return None
 
+        async def v0_4_1_to_v0_4_2(doc: BaseDocument) -> Optional[BaseDocument]:
+            doc = cast(_AgentDocument, doc)
+
+            if doc["version"] == "0.4.1":
+                return _AgentDocument(
+                    id=ObjectId(doc["id"]),
+                    version=Version.String("0.4.2"),
+                    creation_utc=doc["creation_utc"],
+                    name=doc["name"],
+                    description=doc.get("description"),
+                    max_engine_iterations=doc["max_engine_iterations"],
+                    composition_mode=doc.get("composition_mode", CompositionMode.FLUID.value),
+                    playbook_id=doc.get("playbook_id"),
+                    model_name=None,
+                )
+
+            if doc["version"] == "0.4.2":
+                return doc
+
+            return None
+
         return await DocumentMigrationHelper[_AgentDocument](
             self,
             {
@@ -254,6 +279,7 @@ class AgentDocumentStore(AgentStore):
                 "0.2.0": v0_2_0_to_v0_3_0,
                 "0.3.0": v0_3_0_to_v0_4_0,
                 "0.4.0": v0_4_0_to_v0_4_1,
+                "0.4.1": v0_4_1_to_v0_4_2,
             },
         ).migrate(doc)
 
@@ -265,7 +291,7 @@ class AgentDocumentStore(AgentStore):
         if doc["version"] == "0.3.0":
             return _AgentTagAssociationDocument(
                 id=ObjectId(doc["id"]),
-                version=Version.String("0.4.1"),
+                version=Version.String("0.4.2"),
                 creation_utc=doc["creation_utc"],
                 agent_id=AgentId(doc["agent_id"]),
                 tag_id=TagId(doc["tag_id"]),
@@ -274,13 +300,22 @@ class AgentDocumentStore(AgentStore):
         if doc["version"] == "0.4.0":
             return _AgentTagAssociationDocument(
                 id=ObjectId(doc["id"]),
-                version=Version.String("0.4.1"),
+                version=Version.String("0.4.2"),
                 creation_utc=doc["creation_utc"],
                 agent_id=AgentId(doc["agent_id"]),
                 tag_id=TagId(doc["tag_id"]),
             )
 
         if doc["version"] == "0.4.1":
+            return _AgentTagAssociationDocument(
+                id=ObjectId(doc["id"]),
+                version=Version.String("0.4.2"),
+                creation_utc=doc["creation_utc"],
+                agent_id=AgentId(doc["agent_id"]),
+                tag_id=TagId(doc["tag_id"]),
+            )
+
+        if doc["version"] == "0.4.2":
             return doc
 
         return None
@@ -291,6 +326,15 @@ class AgentDocumentStore(AgentStore):
         doc = cast(_AgentDisabledRuleDocument, doc)
 
         if doc["version"] == "0.4.1":
+            return _AgentDisabledRuleDocument(
+                id=ObjectId(doc["id"]),
+                version=Version.String("0.4.2"),
+                creation_utc=doc["creation_utc"],
+                agent_id=AgentId(doc["agent_id"]),
+                rule_ref=DisabledRuleRef(doc["rule_ref"]),
+            )
+
+        if doc["version"] == "0.4.2":
             return doc
 
         return None
@@ -339,6 +383,7 @@ class AgentDocumentStore(AgentStore):
             max_engine_iterations=agent.max_engine_iterations,
             composition_mode=agent.composition_mode.value,
             playbook_id=agent.playbook_id,
+            model_name=agent.model_name,
         )
 
     async def _deserialize_agent(self, agent_document: _AgentDocument) -> Agent:
@@ -368,6 +413,7 @@ class AgentDocumentStore(AgentStore):
             disabled_rules=disabled_rules,
             composition_mode=CompositionMode(agent_document.get("composition_mode", "fluid")),
             playbook_id=PlaybookId(playbook_id_str) if playbook_id_str else None,
+            model_name=agent_document.get("model_name"),
         )
 
     @override
@@ -381,6 +427,7 @@ class AgentDocumentStore(AgentStore):
         tags: Optional[Sequence[TagId]] = None,
         id: Optional[AgentId] = None,
         playbook_id: Optional[PlaybookId] = None,
+        model_name: Optional[str] = None,
     ) -> Agent:
         async with self._lock.writer_lock:
             creation_utc = creation_utc or datetime.now(timezone.utc)
@@ -407,6 +454,7 @@ class AgentDocumentStore(AgentStore):
                 tags=tags or [],
                 composition_mode=composition_mode or CompositionMode.FLUID,
                 playbook_id=playbook_id,
+                model_name=model_name,
             )
 
             await self._agents_collection.insert_one(document=self._serialize_agent(agent=agent))

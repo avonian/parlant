@@ -968,7 +968,7 @@ Guidelines:
     ) -> tuple[GenerationInfo, Sequence[SingleToolBatchToolCallEvaluation]]:
         inference = await self._consequential_schema_generator.generate(
             prompt=prompt,
-            hints={"temperature": temperature},
+            hints={"temperature": temperature, "model_name": self._context.effective_model_name},
         )
         self._logger.trace(
             f"Inference::Completion: {tool_id.to_string()}\n{inference.content.model_dump_json(indent=2)}"
@@ -1243,7 +1243,7 @@ OUTPUT FORMAT:
     ) -> tuple[GenerationInfo, Sequence[NonConsequentialToolCallEvaluation]]:
         inference = await self._non_consequential_schema_generator.generate(
             prompt=prompt,
-            hints={"temperature": temperature},
+            hints={"temperature": temperature, "model_name": self._context.effective_model_name},
         )
         self._logger.trace(
             f"Inference::Completion: {tool_id.to_string()}\n{inference.content.model_dump_json(indent=2)}"
