@@ -218,6 +218,10 @@ from parlant.core.guideline_tool_associations import (
     GuidelineToolAssociationDocumentStore,
     GuidelineToolAssociationStore,
 )
+from parlant.core.agent_tool_associations import (
+    AgentToolAssociationDocumentStore,
+    AgentToolAssociationStore,
+)
 from parlant.core.shots import ShotCollection
 from parlant.core.entity_cq import EntityQueries, EntityCommands
 from parlant.core.tags import TagDocumentStore, TagStore
@@ -371,6 +375,11 @@ async def container(
         )
         container[GuidelineToolAssociationStore] = await stack.enter_async_context(
             GuidelineToolAssociationDocumentStore(
+                container[IdGenerator], TransientDocumentDatabase()
+            )
+        )
+        container[AgentToolAssociationStore] = await stack.enter_async_context(
+            AgentToolAssociationDocumentStore(
                 container[IdGenerator], TransientDocumentDatabase()
             )
         )

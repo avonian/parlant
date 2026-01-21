@@ -32,6 +32,7 @@ from lagom import Container
 
 from parlant.adapters.loggers.websocket import WebSocketLogger
 from parlant.api import agents, capabilities
+from parlant.api import agent_tool_associations
 from parlant.api import evaluations
 from parlant.api import journeys
 from parlant.api import relationships
@@ -55,6 +56,7 @@ from parlant.core.meter import Meter
 from parlant.core.tracer import Tracer
 from parlant.core.common import ItemNotFoundError, generate_id
 from parlant.core.loggers import Logger
+from parlant.core.agent_tool_associations import AgentToolAssociationStore
 from parlant.core.application import Application
 
 
@@ -113,6 +115,7 @@ async def create_api_app(
     tracer = container[Tracer]
     authorization_policy = container[AuthorizationPolicy]
     application = container[Application]
+    agent_tool_association_store = container[AgentToolAssociationStore]
 
     meter = container[Meter]
     _hist_http_request_duration = meter.create_duration_histogram(
@@ -260,6 +263,14 @@ async def create_api_app(
 
     api_app.include_router(
         router=agent_router,
+    )
+
+    api_app.include_router(
+        prefix="/agents",
+        router=agent_tool_associations.create_router(
+            authorization_policy=authorization_policy,
+            association_store=agent_tool_association_store,
+        ),
     )
 
     api_app.include_router(
