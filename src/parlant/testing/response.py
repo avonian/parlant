@@ -139,10 +139,26 @@ class Response:
         """Only kind=STATUS events."""
         return [e for e in self._events if e.kind == "status"]
 
-    async def should(self, condition: Union[str, Should, Sequence[Union[str, Should]]]) -> float:
-        """Assert condition(s) on response.message and return a normalized score.
+    def _format_tool_calls(self) -> str:
+        """Format tool calls for inclusion in evaluation context."""
+        if not self.tool_calls:
+            return "None"
 
-        Formats condition as "The message should {condition}" and runs nlp_test.
+        formatted_calls = []
+        for tc in self.tool_calls:
+            # Extract tool name from tool_id (format: "service:tool_name")
+            tool_name = tc.tool_id.split(":")[-1] if ":" in tc.tool_id else tc.tool_id
+            args_str = ", ".join(f"{k}={v!r}" for k, v in tc.arguments.items())
+            result_str = tc.result.get("data") if isinstance(tc.result, dict) else tc.result
+            formatted_calls.append(f"- {tool_name}({args_str}) -> {result_str}")
+
+        return "\n".join(formatted_calls)
+
+    async def should(self, condition: Union[str, Should, Sequence[Union[str, Should]]]) -> float:
+        """Assert condition(s) on the agent's response and return a normalized score.
+
+        Evaluates conditions against both the agent's message and any tool calls made.
+        Formats condition as "The agent should {condition}" and runs nlp_test.
         For multiple conditions, runs all in parallel with safe_gather.
         Returns a score from 0-100 based on weighted conditions.
         Raises AssertionError on failure.
@@ -174,16 +190,25 @@ class Response:
         if self._listener and self._test_name:
             await self._listener.on_evaluating(self._test_name, condition_strs)
 
-        # Build full conversation context including the agent's response
+        # Build full conversation context including the agent's response and tool calls
         context_parts = []
         for role, msg in self._conversation:
             context_parts.append(f"{role}: {msg}")
-        # Add the agent's response being evaluated
-        context_parts.append(f"Agent: {self.message}")
+
+        # Add the agent's message if present
+        if self.message:
+            context_parts.append(f"Agent message: {self.message}")
+
+        # Add tool calls if any were made
+        if self.tool_calls:
+            context_parts.append(f"Tool calls made:\n{self._format_tool_calls()}")
+        else:
+            context_parts.append("Tool calls made: None")
+
         full_context = "\n".join(context_parts)
 
         async def check_condition(cond: Should) -> tuple[Should, bool, str]:
-            formatted = f"The message should {cond.value}"
+            formatted = f"The agent should {cond.value}"
             result, reasoning = await self._suite.nlp_test(full_context, formatted)
             # Notify listener of individual condition result
             if self._listener and self._test_name:
@@ -215,10 +240,13 @@ class Response:
                 f"  - '{cond}' ({(weight / total_weight * 100):.0f}%): {reasoning}"
                 for cond, weight, reasoning in failures
             )
-            raise AssertionError(
-                f"Response assertion failed (score: {score:.1f}/100):\n"
-                f"Actual message: {self.message!r}\n"
-                f"Failed conditions:\n{failure_details}"
-            )
+            # Build error message with available response data
+            error_parts = [f"Response assertion failed (score: {score:.1f}/100):"]
+            if self.message:
+                error_parts.append(f"Agent message: {self.message!r}")
+            if self.tool_calls:
+                error_parts.append(f"Tool calls:\n{self._format_tool_calls()}")
+            error_parts.append(f"Failed conditions:\n{failure_details}")
+            raise AssertionError("\n".join(error_parts))
 
         return score

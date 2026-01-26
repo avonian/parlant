@@ -41,6 +41,7 @@ from parlant.core.test_suites import (
     TestSuiteId,
     TestSuiteStore,
     TestSuiteUpdateParams,
+    ToolCallRecord,
 )
 
 if TYPE_CHECKING:
@@ -418,10 +419,25 @@ class TestSuiteModule:
                         response = await session.send(step.content)
                         conversation_history.append(("Customer", step.content))
 
-                        # Get actual agent response
+                        # Get actual agent response and tool calls
                         actual_response = response.message
                         await listener.on_message_received(test_name, "agent", actual_response)
                         conversation_history.append(("Agent", actual_response))
+
+                        # Convert tool calls to ToolCallRecord list
+                        tool_call_records: list[ToolCallRecord] | None = None
+                        if response.tool_calls:
+                            tool_call_records = [
+                                ToolCallRecord(
+                                    tool_id=tc.tool_id,
+                                    tool_name=tc.tool_id.split(":")[-1]
+                                    if ":" in tc.tool_id
+                                    else tc.tool_id,
+                                    arguments=dict(tc.arguments),
+                                    result=tc.result,
+                                )
+                                for tc in response.tool_calls
+                            ]
 
                         step_results.append(
                             TestStepResult(
@@ -429,6 +445,7 @@ class TestSuiteModule:
                                 role="customer",
                                 content=step.content,
                                 actual_response=actual_response,
+                                tool_calls=tool_call_records,
                             )
                         )
 
@@ -453,6 +470,7 @@ class TestSuiteModule:
                                             role="agent",
                                             content=next_step.content,
                                             actual_response=actual_response,
+                                            tool_calls=tool_call_records,
                                             assertion=next_step.should,
                                             assertion_passed=True,
                                             assertion_score=score,
@@ -483,12 +501,26 @@ class TestSuiteModule:
                                     if reasoning_match:
                                         reasoning = reasoning_match.group(1).strip()
 
+                                    # Format tool calls for details
+                                    tool_calls_formatted: list[dict[str, Any]] | None = None
+                                    if tool_call_records:
+                                        tool_calls_formatted = [
+                                            {
+                                                "tool_id": tc.tool_id,
+                                                "tool_name": tc.tool_name,
+                                                "arguments": dict(tc.arguments),
+                                                "result": tc.result,
+                                            }
+                                            for tc in tool_call_records
+                                        ]
+
                                     step_results.append(
                                         TestStepResult(
                                             step_index=idx + 1,
                                             role="agent",
                                             content=next_step.content,
                                             actual_response=actual_response,
+                                            tool_calls=tool_call_records,
                                             assertion=next_step.should,
                                             assertion_passed=False,
                                             assertion_reasoning=reasoning,
@@ -505,6 +537,7 @@ class TestSuiteModule:
                                             "expected": next_step.should,
                                             "reasoning": reasoning,
                                             "score": score_val,
+                                            "tool_calls": tool_calls_formatted,
                                         },
                                     )
 

@@ -22,7 +22,7 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from enum import Enum
-from typing import Literal, NewType, Optional, Sequence, cast
+from typing import Any, Literal, Mapping, NewType, Optional, Sequence, cast
 
 from typing_extensions import Self, TypedDict, override
 
@@ -136,6 +136,23 @@ class TestSuite:
 
 
 @dataclass(frozen=True)
+class ToolCallRecord:
+    """Record of a tool call made during test execution.
+
+    Attributes:
+        tool_id: Full tool identifier (service:tool_name).
+        tool_name: Short tool name.
+        arguments: Arguments passed to the tool.
+        result: Result returned by the tool.
+    """
+
+    tool_id: str
+    tool_name: str
+    arguments: Mapping[str, Any]
+    result: Any
+
+
+@dataclass(frozen=True)
 class TestStepResult:
     """Result of executing a single test step.
 
@@ -144,6 +161,7 @@ class TestStepResult:
         role: Role that performed this step ("customer" or "agent").
         content: The original step content.
         actual_response: For agent steps, the actual agent response.
+        tool_calls: List of tool calls made during this step.
         assertion: The assertion condition that was evaluated.
         assertion_passed: Whether the assertion passed.
         assertion_reasoning: NLP reasoning for pass/fail.
@@ -154,6 +172,7 @@ class TestStepResult:
     role: str
     content: str
     actual_response: Optional[str] = None
+    tool_calls: Optional[Sequence[ToolCallRecord]] = None
     assertion: Optional[str] = None
     assertion_passed: Optional[bool] = None
     assertion_reasoning: Optional[str] = None
@@ -573,6 +592,15 @@ class TestScenarioDocument(TypedDict, total=False):
     repetitions: int
 
 
+class ToolCallRecordDocument(TypedDict):
+    """Document format for a tool call record."""
+
+    tool_id: str
+    tool_name: str
+    arguments: Mapping[str, Any]
+    result: Any
+
+
 class TestStepResultDocument(TypedDict):
     """Document format for a test step result."""
 
@@ -580,6 +608,7 @@ class TestStepResultDocument(TypedDict):
     role: str
     content: str
     actual_response: Optional[str]
+    tool_calls: Optional[Sequence[ToolCallRecordDocument]]
     assertion: Optional[str]
     assertion_passed: Optional[bool]
     assertion_reasoning: Optional[str]
@@ -700,12 +729,31 @@ class TestSuiteDocumentStore(TestSuiteStore):
             should_weight=doc.get("should_weight", 1.0),
         )
 
+    def _serialize_tool_call(self, tc: ToolCallRecord) -> ToolCallRecordDocument:
+        return ToolCallRecordDocument(
+            tool_id=tc.tool_id,
+            tool_name=tc.tool_name,
+            arguments=dict(tc.arguments),
+            result=tc.result,
+        )
+
+    def _deserialize_tool_call(self, doc: ToolCallRecordDocument) -> ToolCallRecord:
+        return ToolCallRecord(
+            tool_id=doc["tool_id"],
+            tool_name=doc["tool_name"],
+            arguments=doc["arguments"],
+            result=doc["result"],
+        )
+
     def _serialize_step_result(self, result: TestStepResult) -> TestStepResultDocument:
         return TestStepResultDocument(
             step_index=result.step_index,
             role=result.role,
             content=result.content,
             actual_response=result.actual_response,
+            tool_calls=[self._serialize_tool_call(tc) for tc in result.tool_calls]
+            if result.tool_calls
+            else None,
             assertion=result.assertion,
             assertion_passed=result.assertion_passed,
             assertion_reasoning=result.assertion_reasoning,
@@ -713,11 +761,15 @@ class TestSuiteDocumentStore(TestSuiteStore):
         )
 
     def _deserialize_step_result(self, doc: TestStepResultDocument) -> TestStepResult:
+        tool_calls_doc = doc.get("tool_calls")
         return TestStepResult(
             step_index=doc["step_index"],
             role=doc["role"],
             content=doc["content"],
             actual_response=doc.get("actual_response"),
+            tool_calls=[self._deserialize_tool_call(tc) for tc in tool_calls_doc]
+            if tool_calls_doc
+            else None,
             assertion=doc.get("assertion"),
             assertion_passed=doc.get("assertion_passed"),
             assertion_reasoning=doc.get("assertion_reasoning"),
