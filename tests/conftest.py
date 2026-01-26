@@ -221,6 +221,7 @@ from parlant.core.guideline_tool_associations import (
 from parlant.core.shots import ShotCollection
 from parlant.core.entity_cq import EntityQueries, EntityCommands
 from parlant.core.tags import TagDocumentStore, TagStore
+from parlant.core.test_suites import TestSuiteDocumentStore, TestSuiteStore
 from parlant.core.tools import LocalToolService
 
 from .test_utilities import (
@@ -365,6 +366,9 @@ async def container(
         )
         container[TagStore] = await stack.enter_async_context(
             TagDocumentStore(container[IdGenerator], TransientDocumentDatabase())
+        )
+        container[TestSuiteStore] = await stack.enter_async_context(
+            TestSuiteDocumentStore(container[IdGenerator], TransientDocumentDatabase())
         )
         container[CustomerStore] = await stack.enter_async_context(
             CustomerDocumentStore(container[IdGenerator], TransientDocumentDatabase())
