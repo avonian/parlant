@@ -32,6 +32,7 @@ from parlant.core.application import Application
 from parlant.core.common import DefaultBaseModel, ItemNotFoundError
 from parlant.core.customers import CustomerId
 from parlant.core.test_suites import (
+    FailureDetails,
     TestRun,
     TestRunId,
     TestScenario,
@@ -43,6 +44,7 @@ from parlant.core.test_suites import (
     TestSuite,
     TestSuiteId,
     TestSuiteUpdateParams,
+    ToolCallRecord,
 )
 
 API_GROUP = "test-suites"
@@ -219,6 +221,27 @@ class ToolCallRecordDTO(DefaultBaseModel, json_schema_extra={"example": tool_cal
     result: Any = Field(description="Result returned by the tool")
 
 
+failure_details_example: ExampleJson = {
+    "expected": "greet the customer warmly",
+    "actual": "Hello! How can I help you today?",
+    "reasoning": "The response warmly greets the customer",
+    "score": 100.0,
+    "tool_calls": None,
+}
+
+
+class FailureDetailsDTO(DefaultBaseModel, json_schema_extra={"example": failure_details_example}):
+    """Structured details about a test failure."""
+
+    expected: str | None = Field(default=None, description="The assertion/condition that was expected")
+    actual: str | None = Field(default=None, description="The actual response from the agent")
+    reasoning: str | None = Field(default=None, description="Explanation of why the assertion failed")
+    score: float | None = Field(default=None, ge=0.0, le=100.0, description="Assertion score (0-100)")
+    tool_calls: List[ToolCallRecordDTO] | None = Field(
+        default=None, description="Tool calls made during the failed step"
+    )
+
+
 test_step_result_example: ExampleJson = {
     "step_index": 0,
     "role": "customer",
@@ -259,6 +282,7 @@ test_scenario_result_example: ExampleJson = {
     "duration_ms": 1234.5,
     "step_results": [test_step_result_example],
     "error": None,
+    "failure_details": None,
     "repetition": 1,
 }
 
@@ -274,6 +298,9 @@ class TestScenarioResultDTO(
     duration_ms: float = Field(ge=0.0, description="Time taken in milliseconds")
     step_results: Sequence[TestStepResultDTO] = Field(description="Results per step")
     error: str | None = Field(default=None, description="Error message if failed")
+    failure_details: FailureDetailsDTO | None = Field(
+        default=None, description="Structured details about the failure (for assertion failures)"
+    )
     repetition: int = Field(default=1, ge=1, description="Which repetition this was")
 
 
@@ -458,6 +485,29 @@ def _test_step_result_to_dto(result: TestStepResult) -> TestStepResultDTO:
     )
 
 
+def _failure_details_to_dto(details: FailureDetails | None) -> FailureDetailsDTO | None:
+    if details is None:
+        return None
+    tool_calls_dto: List[ToolCallRecordDTO] | None = None
+    if details.tool_calls:
+        tool_calls_dto = [
+            ToolCallRecordDTO(
+                tool_id=tc.tool_id,
+                tool_name=tc.tool_name,
+                arguments=dict(tc.arguments),
+                result=tc.result,
+            )
+            for tc in details.tool_calls
+        ]
+    return FailureDetailsDTO(
+        expected=details.expected,
+        actual=details.actual,
+        reasoning=details.reasoning,
+        score=details.score,
+        tool_calls=tool_calls_dto,
+    )
+
+
 def _test_scenario_result_to_dto(result: TestScenarioResult) -> TestScenarioResultDTO:
     return TestScenarioResultDTO(
         scenario_id=result.scenario_id,
@@ -466,6 +516,7 @@ def _test_scenario_result_to_dto(result: TestScenarioResult) -> TestScenarioResu
         duration_ms=result.duration_ms,
         step_results=[_test_step_result_to_dto(sr) for sr in result.step_results],
         error=result.error,
+        failure_details=_failure_details_to_dto(result.failure_details),
         repetition=result.repetition,
     )
 

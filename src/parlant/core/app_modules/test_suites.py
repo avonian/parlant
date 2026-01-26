@@ -32,6 +32,7 @@ from parlant.core.engines.alpha.tool_calling.tool_caller import (
 from parlant.core.loggers import Logger
 from parlant.core.test_suites import (
     TestRun,
+    FailureDetails,
     TestRunId,
     TestRunStatus,
     TestRunUpdateParams,
@@ -597,6 +598,15 @@ class TestSuiteModule:
                                         for tc in tool_call_records
                                     ]
 
+                                # Create structured failure details
+                                failure_details = FailureDetails(
+                                    expected=assertion,
+                                    actual=actual_response,
+                                    reasoning=assertion_reasoning,
+                                    score=assertion_score,
+                                    tool_calls=tool_call_records,
+                                )
+
                                 await listener.on_test_failed(
                                     test_name,
                                     duration_ms,
@@ -617,6 +627,7 @@ class TestSuiteModule:
                                     duration_ms=duration_ms,
                                     step_results=step_results,
                                     error=failure_error,
+                                    failure_details=failure_details,
                                     repetition=repetition,
                                 )
 

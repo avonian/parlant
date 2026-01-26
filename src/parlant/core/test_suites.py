@@ -160,6 +160,25 @@ class ToolCallRecord:
 
 
 @dataclass(frozen=True)
+class FailureDetails:
+    """Structured details about a test failure.
+
+    Attributes:
+        expected: The assertion/condition that was expected.
+        actual: The actual response from the agent.
+        reasoning: Explanation of why the assertion failed.
+        score: Assertion score (0-100).
+        tool_calls: Tool calls made during the failed step (if any).
+    """
+
+    expected: Optional[str] = None
+    actual: Optional[str] = None
+    reasoning: Optional[str] = None
+    score: Optional[float] = None
+    tool_calls: Optional[Sequence[ToolCallRecord]] = None
+
+
+@dataclass(frozen=True)
 class TestStepResult:
     """Result of executing a single test step.
 
@@ -199,6 +218,7 @@ class TestScenarioResult:
         duration_ms: Time taken to run in milliseconds.
         step_results: Results for each step.
         error: Error message if the scenario failed with an error.
+        failure_details: Structured details about the failure (for assertion failures).
         repetition: Which repetition this is (1-indexed).
     """
 
@@ -208,6 +228,7 @@ class TestScenarioResult:
     duration_ms: float
     step_results: Sequence[TestStepResult]
     error: Optional[str] = None
+    failure_details: Optional[FailureDetails] = None
     repetition: int = 1
 
 
@@ -627,7 +648,17 @@ class TestStepResultDocument(TypedDict):
     trace_id: Optional[str]
 
 
-class TestScenarioResultDocument(TypedDict):
+class FailureDetailsDocument(TypedDict, total=False):
+    """Document format for failure details."""
+
+    expected: Optional[str]
+    actual: Optional[str]
+    reasoning: Optional[str]
+    score: Optional[float]
+    tool_calls: Optional[Sequence[ToolCallRecordDocument]]
+
+
+class TestScenarioResultDocument(TypedDict, total=False):
     """Document format for a test scenario result."""
 
     scenario_id: str
@@ -636,6 +667,7 @@ class TestScenarioResultDocument(TypedDict):
     duration_ms: float
     step_results: Sequence[TestStepResultDocument]
     error: Optional[str]
+    failure_details: Optional[FailureDetailsDocument]
     repetition: int
 
 
@@ -797,6 +829,39 @@ class TestSuiteDocumentStore(TestSuiteStore):
             trace_id=doc.get("trace_id"),
         )
 
+    def _serialize_failure_details(
+        self, details: Optional[FailureDetails]
+    ) -> Optional[FailureDetailsDocument]:
+        if details is None:
+            return None
+        tool_calls_doc: Optional[list[ToolCallRecordDocument]] = None
+        if details.tool_calls:
+            tool_calls_doc = [self._serialize_tool_call(tc) for tc in details.tool_calls]
+        return FailureDetailsDocument(
+            expected=details.expected,
+            actual=details.actual,
+            reasoning=details.reasoning,
+            score=details.score,
+            tool_calls=tool_calls_doc,
+        )
+
+    def _deserialize_failure_details(
+        self, doc: Optional[FailureDetailsDocument]
+    ) -> Optional[FailureDetails]:
+        if doc is None:
+            return None
+        tool_calls: Optional[list[ToolCallRecord]] = None
+        tool_calls_doc = doc.get("tool_calls")
+        if tool_calls_doc:
+            tool_calls = [self._deserialize_tool_call(tc) for tc in tool_calls_doc]
+        return FailureDetails(
+            expected=doc.get("expected"),
+            actual=doc.get("actual"),
+            reasoning=doc.get("reasoning"),
+            score=doc.get("score"),
+            tool_calls=tool_calls,
+        )
+
     def _serialize_scenario_result(self, result: TestScenarioResult) -> TestScenarioResultDocument:
         return TestScenarioResultDocument(
             scenario_id=result.scenario_id,
@@ -805,6 +870,7 @@ class TestSuiteDocumentStore(TestSuiteStore):
             duration_ms=result.duration_ms,
             step_results=[self._serialize_step_result(sr) for sr in result.step_results],
             error=result.error,
+            failure_details=self._serialize_failure_details(result.failure_details),
             repetition=result.repetition,
         )
 
@@ -816,6 +882,7 @@ class TestSuiteDocumentStore(TestSuiteStore):
             duration_ms=doc["duration_ms"],
             step_results=[self._deserialize_step_result(sr) for sr in doc["step_results"]],
             error=doc.get("error"),
+            failure_details=self._deserialize_failure_details(doc.get("failure_details")),
             repetition=doc.get("repetition", 1),
         )
 
