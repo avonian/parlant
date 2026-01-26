@@ -72,20 +72,27 @@ class TestStepStatus(str, Enum):
 class TestStep:
     """A single step in a test scenario.
 
+    Steps can be customer messages, agent responses with assertions,
+    or tool call expectations with mock responses.
+
     Attributes:
-        role: Either "customer" (sends message) or "agent" (expects response).
-        content: The message content. For customer, what to send.
-                 For agent, the reference response used in subsequent history.
+        role: "customer" (sends message), "agent" (expects response), or "tool" (expects tool call).
+        content: For customer/agent: the message content.
+                 For tool: the tool_id (e.g., "service:tool_name").
         should: Assertion condition for agent steps. Formatted as
                 "The message should {should}" during evaluation.
                 If None, step is just history without assertion.
         should_weight: Weight for scoring when multiple conditions (default 1.0).
+        tool_arguments: For tool steps, expected arguments to assert (optional).
+        tool_response: For tool steps, mock response to return.
     """
 
-    role: Literal["customer", "agent"]
+    role: Literal["customer", "agent", "tool"]
     content: str
     should: Optional[str] = None
     should_weight: float = 1.0
+    tool_arguments: Optional[Mapping[str, Any]] = None
+    tool_response: Optional[Mapping[str, Any]] = None
 
 
 @dataclass(frozen=True)
@@ -558,13 +565,15 @@ class TestSuiteStore(ABC):
 # Document TypedDicts for persistence
 
 
-class TestStepDocument(TypedDict):
+class TestStepDocument(TypedDict, total=False):
     """Document format for a test step."""
 
     role: str
     content: str
     should: Optional[str]
     should_weight: float
+    tool_arguments: Optional[Mapping[str, Any]]
+    tool_response: Optional[Mapping[str, Any]]
 
 
 class TestSuiteDocument(TypedDict, total=False):
@@ -714,19 +723,26 @@ class TestSuiteDocumentStore(TestSuiteStore):
     # Serialization helpers
 
     def _serialize_step(self, step: TestStep) -> TestStepDocument:
-        return TestStepDocument(
+        doc = TestStepDocument(
             role=step.role,
             content=step.content,
             should=step.should,
             should_weight=step.should_weight,
         )
+        if step.tool_arguments is not None:
+            doc["tool_arguments"] = dict(step.tool_arguments)
+        if step.tool_response is not None:
+            doc["tool_response"] = dict(step.tool_response)
+        return doc
 
     def _deserialize_step(self, doc: TestStepDocument) -> TestStep:
         return TestStep(
-            role=cast(Literal["customer", "agent"], doc["role"]),
+            role=cast(Literal["customer", "agent", "tool"], doc["role"]),
             content=doc["content"],
             should=doc.get("should"),
             should_weight=doc.get("should_weight", 1.0),
+            tool_arguments=doc.get("tool_arguments"),
+            tool_response=doc.get("tool_response"),
         )
 
     def _serialize_tool_call(self, tc: ToolCallRecord) -> ToolCallRecordDocument:

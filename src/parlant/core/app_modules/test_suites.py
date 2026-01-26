@@ -24,6 +24,11 @@ from typing import TYPE_CHECKING, Any, Optional, Protocol, Sequence
 
 from parlant.core.agents import AgentId, AgentStore
 from parlant.core.customers import CustomerId
+from parlant.core.engines.alpha.tool_calling.tool_caller import (
+    ToolMockExpectation,
+    register_tool_mock_queue,
+    clear_tool_mock_queue,
+)
 from parlant.core.loggers import Logger
 from parlant.core.test_suites import (
     TestRun,
@@ -55,11 +60,15 @@ class TestEventListenerProtocol(Protocol):
     async def on_suite_start(self, suite_name: str, total_tests: int) -> None: ...
     async def on_test_start(self, test_name: str) -> None: ...
     async def on_message_sent(self, test_name: str, role: str, content: str) -> None: ...
-    async def on_message_received(self, test_name: str, role: str, content: str) -> None: ...
+    async def on_message_received(
+        self, test_name: str, role: str, content: str, tool_calls: Any = None
+    ) -> None: ...
     async def on_evaluating(self, test_name: str, conditions: list[str]) -> None: ...
     async def on_condition_result(self, test_name: str, condition: str, passed: bool) -> None: ...
     async def on_assertion_score(self, test_name: str, score: float) -> None: ...
-    async def on_test_passed(self, test_name: str, duration_ms: float) -> None: ...
+    async def on_test_passed(
+        self, test_name: str, duration_ms: float, details: Any = None
+    ) -> None: ...
     async def on_test_failed(
         self, test_name: str, duration_ms: float, error: str, details: Any
     ) -> None: ...
@@ -78,7 +87,9 @@ class NullEventListener:
     async def on_message_sent(self, test_name: str, role: str, content: str) -> None:
         pass
 
-    async def on_message_received(self, test_name: str, role: str, content: str) -> None:
+    async def on_message_received(
+        self, test_name: str, role: str, content: str, tool_calls: Any = None
+    ) -> None:
         pass
 
     async def on_evaluating(self, test_name: str, conditions: list[str]) -> None:
@@ -90,7 +101,7 @@ class NullEventListener:
     async def on_assertion_score(self, test_name: str, score: float) -> None:
         pass
 
-    async def on_test_passed(self, test_name: str, duration_ms: float) -> None:
+    async def on_test_passed(self, test_name: str, duration_ms: float, details: Any = None) -> None:
         pass
 
     async def on_test_failed(
@@ -408,165 +419,226 @@ class TestSuiteModule:
                 customer_id=str(scenario.customer_id) if scenario.customer_id else None,
             )
 
+            # Collect tool steps to register as mock expectations
+            tool_expectations: list[ToolMockExpectation] = []
+            for step in scenario.steps:
+                if step.role == "tool" and step.tool_response is not None:
+                    tool_expectations.append(
+                        ToolMockExpectation(
+                            tool_id=step.content,  # content holds the tool_id for tool steps
+                            tool_response=step.tool_response,
+                            tool_arguments=step.tool_arguments,
+                        )
+                    )
+
             # Execute using session
             async with test_suite.session(transient=True) as session:
-                conversation_history: list[tuple[str, str]] = []
+                # Register tool mocks if any
+                if tool_expectations:
+                    register_tool_mock_queue(session.id, tool_expectations)
 
-                for idx, step in enumerate(scenario.steps):
-                    if step.role == "customer":
-                        # Send customer message
-                        await listener.on_message_sent(test_name, "customer", step.content)
-                        response = await session.send(step.content)
-                        conversation_history.append(("Customer", step.content))
+                try:
+                    conversation_history: list[tuple[str, str]] = []
 
-                        # Get actual agent response and tool calls
-                        actual_response = response.message
-                        await listener.on_message_received(test_name, "agent", actual_response)
-                        conversation_history.append(("Agent", actual_response))
+                    for idx, step in enumerate(scenario.steps):
+                        # Skip tool steps - they're registered as mocks above
+                        if step.role == "tool":
+                            continue
 
-                        # Convert tool calls to ToolCallRecord list
-                        tool_call_records: list[ToolCallRecord] | None = None
-                        if response.tool_calls:
-                            tool_call_records = [
-                                ToolCallRecord(
-                                    tool_id=tc.tool_id,
-                                    tool_name=tc.tool_id.split(":")[-1]
-                                    if ":" in tc.tool_id
-                                    else tc.tool_id,
-                                    arguments=dict(tc.arguments),
-                                    result=tc.result,
-                                )
-                                for tc in response.tool_calls
-                            ]
+                        if step.role == "customer":
+                            # Send customer message
+                            await listener.on_message_sent(test_name, "customer", step.content)
+                            response = await session.send(step.content)
+                            conversation_history.append(("Customer", step.content))
 
-                        step_results.append(
-                            TestStepResult(
-                                step_index=idx,
-                                role="customer",
-                                content=step.content,
-                                actual_response=actual_response,
-                                tool_calls=tool_call_records,
+                            # Get actual agent response and tool calls
+                            actual_response = response.message
+
+                            # Convert tool calls to ToolCallRecord list
+                            tool_call_records: list[ToolCallRecord] | None = None
+                            tool_calls_formatted: list[dict[str, Any]] | None = None
+                            if response.tool_calls:
+                                tool_call_records = [
+                                    ToolCallRecord(
+                                        tool_id=tc.tool_id,
+                                        tool_name=tc.tool_id.split(":")[-1]
+                                        if ":" in tc.tool_id
+                                        else tc.tool_id,
+                                        arguments=dict(tc.arguments),
+                                        result=tc.result,
+                                    )
+                                    for tc in response.tool_calls
+                                ]
+                                tool_calls_formatted = [
+                                    {
+                                        "tool_id": tc.tool_id,
+                                        "tool_name": tc.tool_name,
+                                        "arguments": dict(tc.arguments),
+                                        "result": tc.result,
+                                    }
+                                    for tc in tool_call_records
+                                ]
+
+                            await listener.on_message_received(
+                                test_name, "agent", actual_response, tool_calls_formatted
                             )
-                        )
+                            conversation_history.append(("Agent", actual_response))
 
-                        # If the next step is an agent step with assertion, evaluate it
-                        if idx + 1 < len(scenario.steps):
-                            next_step = scenario.steps[idx + 1]
-                            if next_step.role == "agent" and next_step.should:
-                                await listener.on_evaluating(test_name, [next_step.should])
+                            step_results.append(
+                                TestStepResult(
+                                    step_index=idx,
+                                    role="customer",
+                                    content=step.content,
+                                    actual_response=actual_response,
+                                    tool_calls=tool_call_records,
+                                )
+                            )
 
-                                try:
-                                    score = await response.should(
-                                        Should(next_step.should, next_step.should_weight)
-                                    )
-                                    await listener.on_condition_result(
-                                        test_name, next_step.should, True
-                                    )
-                                    await listener.on_assertion_score(test_name, score)
+                            # If the next step is an agent step with assertion, evaluate it
+                            if idx + 1 < len(scenario.steps):
+                                next_step = scenario.steps[idx + 1]
+                                if next_step.role == "agent" and next_step.should:
+                                    await listener.on_evaluating(test_name, [next_step.should])
 
-                                    step_results.append(
-                                        TestStepResult(
-                                            step_index=idx + 1,
-                                            role="agent",
-                                            content=next_step.content,
-                                            actual_response=actual_response,
-                                            tool_calls=tool_call_records,
-                                            assertion=next_step.should,
-                                            assertion_passed=True,
-                                            assertion_score=score,
+                                    try:
+                                        score = await response.should(
+                                            Should(next_step.should, next_step.should_weight)
                                         )
-                                    )
-                                except AssertionError as e:
-                                    await listener.on_condition_result(
-                                        test_name, next_step.should, False
-                                    )
+                                        await listener.on_condition_result(
+                                            test_name, next_step.should, True
+                                        )
+                                        await listener.on_assertion_score(test_name, score)
 
-                                    duration_ms = (time.time() - start_time) * 1000
-                                    error_str = str(e)
+                                        step_results.append(
+                                            TestStepResult(
+                                                step_index=idx + 1,
+                                                role="agent",
+                                                content=next_step.content,
+                                                actual_response=actual_response,
+                                                tool_calls=tool_call_records,
+                                                assertion=next_step.should,
+                                                assertion_passed=True,
+                                                assertion_score=score,
+                                            )
+                                        )
+                                    except AssertionError as e:
+                                        await listener.on_condition_result(
+                                            test_name, next_step.should, False
+                                        )
 
-                                    # Parse score and reasoning from error string
-                                    score_val = 0.0
-                                    reasoning = error_str
+                                        duration_ms = (time.time() - start_time) * 1000
+                                        error_str = str(e)
 
-                                    score_match = re.search(r"\(score:\s*([\d.]+)/100\)", error_str)
-                                    if score_match:
-                                        score_val = float(score_match.group(1))
+                                        # Parse score and reasoning from error string
+                                        score_val = 0.0
+                                        reasoning = error_str
 
-                                    # Extract reasoning (text after the condition percentage)
-                                    reasoning_match = re.search(
-                                        r"Failed conditions:\s*-\s*'[^']+'\s*\(\d+%\):\s*(.+)$",
-                                        error_str,
-                                        re.DOTALL,
-                                    )
-                                    if reasoning_match:
-                                        reasoning = reasoning_match.group(1).strip()
+                                        score_match = re.search(
+                                            r"\(score:\s*([\d.]+)/100\)", error_str
+                                        )
+                                        if score_match:
+                                            score_val = float(score_match.group(1))
 
-                                    # Format tool calls for details
-                                    tool_calls_formatted: list[dict[str, Any]] | None = None
-                                    if tool_call_records:
-                                        tool_calls_formatted = [
+                                        # Extract reasoning (text after the condition percentage)
+                                        reasoning_match = re.search(
+                                            r"Failed conditions:\s*-\s*'[^']+'\s*\(\d+%\):\s*(.+)$",
+                                            error_str,
+                                            re.DOTALL,
+                                        )
+                                        if reasoning_match:
+                                            reasoning = reasoning_match.group(1).strip()
+
+                                        # Format tool calls for failure details
+                                        failed_tool_calls: list[dict[str, Any]] | None = None
+                                        if tool_call_records:
+                                            failed_tool_calls = [
+                                                {
+                                                    "tool_id": tc.tool_id,
+                                                    "tool_name": tc.tool_name,
+                                                    "arguments": dict(tc.arguments),
+                                                    "result": tc.result,
+                                                }
+                                                for tc in tool_call_records
+                                            ]
+
+                                        step_results.append(
+                                            TestStepResult(
+                                                step_index=idx + 1,
+                                                role="agent",
+                                                content=next_step.content,
+                                                actual_response=actual_response,
+                                                tool_calls=tool_call_records,
+                                                assertion=next_step.should,
+                                                assertion_passed=False,
+                                                assertion_reasoning=reasoning,
+                                                assertion_score=score_val,
+                                            )
+                                        )
+
+                                        await listener.on_test_failed(
+                                            test_name,
+                                            duration_ms,
+                                            error_str,
                                             {
-                                                "tool_id": tc.tool_id,
-                                                "tool_name": tc.tool_name,
-                                                "arguments": dict(tc.arguments),
-                                                "result": tc.result,
-                                            }
-                                            for tc in tool_call_records
-                                        ]
-
-                                    step_results.append(
-                                        TestStepResult(
-                                            step_index=idx + 1,
-                                            role="agent",
-                                            content=next_step.content,
-                                            actual_response=actual_response,
-                                            tool_calls=tool_call_records,
-                                            assertion=next_step.should,
-                                            assertion_passed=False,
-                                            assertion_reasoning=reasoning,
-                                            assertion_score=score_val,
+                                                "actual": actual_response,
+                                                "expected": next_step.should,
+                                                "reasoning": reasoning,
+                                                "score": score_val,
+                                                "tool_calls": failed_tool_calls,
+                                            },
                                         )
-                                    )
 
-                                    await listener.on_test_failed(
-                                        test_name,
-                                        duration_ms,
-                                        error_str,
-                                        {
-                                            "actual": actual_response,
-                                            "expected": next_step.should,
-                                            "reasoning": reasoning,
-                                            "score": score_val,
-                                            "tool_calls": tool_calls_formatted,
-                                        },
-                                    )
+                                        return TestScenarioResult(
+                                            scenario_id=scenario.id,
+                                            scenario_name=scenario.name,
+                                            status=TestStepStatus.FAILED,
+                                            duration_ms=duration_ms,
+                                            step_results=step_results,
+                                            error=str(e),
+                                            repetition=repetition,
+                                        )
 
-                                    return TestScenarioResult(
-                                        scenario_id=scenario.id,
-                                        scenario_name=scenario.name,
-                                        status=TestStepStatus.FAILED,
-                                        duration_ms=duration_ms,
-                                        step_results=step_results,
-                                        error=str(e),
-                                        repetition=repetition,
-                                    )
+                        elif step.role == "agent":
+                            # Agent steps without preceding customer message are placeholders
+                            # They're processed alongside the customer step above
+                            pass
 
-                    elif step.role == "agent":
-                        # Agent steps without preceding customer message are just placeholders
-                        # They're processed alongside the customer step above
-                        pass
+                    duration_ms = (time.time() - start_time) * 1000
 
-            duration_ms = (time.time() - start_time) * 1000
-            await listener.on_test_passed(test_name, duration_ms)
+                    # Collect all tool calls from all steps for the passed event
+                    all_tool_calls: list[dict[str, Any]] = []
+                    for sr in step_results:
+                        if sr.tool_calls:
+                            all_tool_calls.extend(
+                                [
+                                    {
+                                        "tool_id": tc.tool_id,
+                                        "tool_name": tc.tool_name,
+                                        "arguments": dict(tc.arguments),
+                                        "result": tc.result,
+                                    }
+                                    for tc in sr.tool_calls
+                                ]
+                            )
 
-            return TestScenarioResult(
-                scenario_id=scenario.id,
-                scenario_name=scenario.name,
-                status=TestStepStatus.PASSED,
-                duration_ms=duration_ms,
-                step_results=step_results,
-                repetition=repetition,
-            )
+                    await listener.on_test_passed(
+                        test_name,
+                        duration_ms,
+                        {"tool_calls": all_tool_calls} if all_tool_calls else None,
+                    )
+
+                    return TestScenarioResult(
+                        scenario_id=scenario.id,
+                        scenario_name=scenario.name,
+                        status=TestStepStatus.PASSED,
+                        duration_ms=duration_ms,
+                        step_results=step_results,
+                        repetition=repetition,
+                    )
+                finally:
+                    # Always clean up the mock queue
+                    if tool_expectations:
+                        clear_tool_mock_queue(session.id)
 
         except Exception as e:
             duration_ms = (time.time() - start_time) * 1000

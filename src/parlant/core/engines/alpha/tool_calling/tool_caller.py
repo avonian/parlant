@@ -20,7 +20,7 @@ from enum import Enum
 import json
 import time
 import traceback
-from typing import AsyncIterator, Mapping, NewType, Optional, Sequence
+from typing import AsyncIterator, Mapping, NewType, Optional, Sequence, cast
 
 from parlant.core import async_utils
 from parlant.core.agents import Agent
@@ -35,7 +35,7 @@ from parlant.core.loggers import Logger
 from parlant.core.meter import DurationHistogram, Meter
 from parlant.core.nlp.generation_info import GenerationInfo
 from parlant.core.services.tools.service_registry import ServiceRegistry
-from parlant.core.sessions import Event, SessionId, ToolResult
+from parlant.core.sessions import ControlOptions, Event, SessionId, ToolResult
 from parlant.core.tools import (
     Tool,
     ToolContext,
@@ -48,6 +48,55 @@ from parlant.core.tools import (
 class ToolCallBatchError(Exception):
     def __init__(self, message: str = "Tool Call Batch failed") -> None:
         super().__init__(message)
+
+
+# Tool mock queue for testing
+# Maps session_id -> list of (tool_id, mock_response) tuples
+_tool_mock_queues: dict[str, list[tuple[str, Mapping[str, object]]]] = {}
+
+
+@dataclass
+class ToolMockExpectation:
+    """Expected tool call with mock response."""
+
+    tool_id: str
+    tool_response: Mapping[str, object]
+    tool_arguments: Optional[Mapping[str, object]] = None  # For validation (optional)
+
+
+def register_tool_mock_queue(
+    session_id: str,
+    expectations: Sequence[ToolMockExpectation],
+) -> None:
+    """Register a queue of expected tool calls for a test session.
+
+    Each call to a tool will pop from the queue and return the mock response.
+    """
+    _tool_mock_queues[session_id] = [(exp.tool_id, exp.tool_response) for exp in expectations]
+
+
+def pop_tool_mock(session_id: str, tool_id: str) -> Mapping[str, object] | None:
+    """Pop the next mock response for a tool call.
+
+    Returns None if no mock is registered or queue is empty.
+    """
+    queue = _tool_mock_queues.get(session_id)
+    if not queue:
+        return None
+
+    # Check if the next expected tool matches
+    expected_tool_id, mock_response = queue[0]
+    if expected_tool_id == tool_id:
+        queue.pop(0)
+        return mock_response
+
+    # Tool doesn't match - could be an unexpected call
+    return None
+
+
+def clear_tool_mock_queue(session_id: str) -> None:
+    """Clear the mock queue for a session."""
+    _tool_mock_queues.pop(session_id, None)
 
 
 ToolCallId = NewType("ToolCallId", str)
@@ -259,6 +308,33 @@ class ToolCaller:
                 f"Execution::Invocation: ({tool_call.tool_id.to_string()}/{tool_call.id})"
                 + (f"\n{json.dumps(tool_call.arguments, indent=2)}" if tool_call.arguments else "")
             )
+
+            # Check for mock response first (used in test suites)
+            mock_response = pop_tool_mock(context.session_id, tool_id.to_string())
+            if mock_response is not None:
+                self._logger.debug(
+                    f"Execution::MockResult: Tool call mocked ({tool_call.tool_id.to_string()}/{tool_call.id})\n{json.dumps(dict(mock_response), indent=2, default=str)}"
+                )
+                # Extract mock result fields with proper type casting
+                mock_data = mock_response.get("data", mock_response)
+                mock_metadata = mock_response.get("metadata", {})
+                mock_control = mock_response.get("control", {})
+                mock_canned = mock_response.get("canned_responses", [])
+                mock_canned_fields = mock_response.get("canned_response_fields", {})
+
+                return ToolCallResult(
+                    id=ToolResultId(generate_id()),
+                    tool_call=tool_call,
+                    result=ToolResult(
+                        data=cast(JSONSerializable, mock_data),
+                        metadata=cast(Mapping[str, JSONSerializable], mock_metadata),
+                        control=cast(ControlOptions, mock_control),
+                        canned_responses=cast(Sequence[str], mock_canned),
+                        canned_response_fields=cast(
+                            Mapping[str, JSONSerializable], mock_canned_fields
+                        ),
+                    ),
+                )
 
             try:
                 service = await self._service_registry.read_tool_service(tool_id.service_name)

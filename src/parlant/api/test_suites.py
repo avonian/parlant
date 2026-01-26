@@ -109,12 +109,27 @@ test_step_example: ExampleJson = {
     "should_weight": 1.0,
 }
 
+tool_step_example: ExampleJson = {
+    "role": "tool",
+    "content": "appointments:check_availability",
+    "tool_arguments": {"doctor": "Dr. Smith"},
+    "tool_response": {"available_slots": ["9:00 AM", "2:00 PM"]},
+}
+
 
 class TestStepDTO(DefaultBaseModel):
-    """A single step in a test scenario."""
+    """A single step in a test scenario.
 
-    role: Literal["customer", "agent"] = Field(description="Role that performs this step")
-    content: str = Field(description="Message content for this step")
+    Steps can be:
+    - customer: Send a message to the agent
+    - agent: Assert the agent's response
+    - tool: Expect a tool call and return a mock response
+    """
+
+    role: Literal["customer", "agent", "tool"] = Field(description="Role that performs this step")
+    content: str = Field(
+        description="For customer/agent: message content. For tool: tool_id (e.g., 'service:tool_name')"
+    )
     should: str | None = Field(
         default=None,
         description="Assertion condition for agent steps (e.g., 'greet the customer')",
@@ -124,6 +139,14 @@ class TestStepDTO(DefaultBaseModel):
         ge=0.0,
         le=1.0,
         description="Weight for scoring when multiple conditions",
+    )
+    tool_arguments: Dict[str, Any] | None = Field(
+        default=None,
+        description="For tool steps: expected arguments to assert (optional)",
+    )
+    tool_response: Dict[str, Any] | None = Field(
+        default=None,
+        description="For tool steps: mock response to return",
     )
 
 
@@ -346,6 +369,8 @@ def _test_step_to_dto(step: TestStep) -> TestStepDTO:
         content=step.content,
         should=step.should,
         should_weight=step.should_weight,
+        tool_arguments=dict(step.tool_arguments) if step.tool_arguments else None,
+        tool_response=dict(step.tool_response) if step.tool_response else None,
     )
 
 
@@ -355,6 +380,8 @@ def _test_step_from_dto(dto: TestStepDTO) -> TestStep:
         content=dto.content,
         should=dto.should,
         should_weight=dto.should_weight,
+        tool_arguments=dto.tool_arguments,
+        tool_response=dto.tool_response,
     )
 
 
@@ -489,13 +516,16 @@ class WebSocketTestEventListener:
             },
         )
 
-    async def on_message_received(self, test_name: str, role: str, content: str) -> None:
+    async def on_message_received(
+        self, test_name: str, role: str, content: str, tool_calls: Any = None
+    ) -> None:
         await self._send(
             "message_received",
             {
                 "test_name": test_name,
                 "role": role,
                 "content": content,
+                "tool_calls": tool_calls,
             },
         )
 
@@ -527,12 +557,15 @@ class WebSocketTestEventListener:
             },
         )
 
-    async def on_test_passed(self, test_name: str, duration_ms: float) -> None:
+    async def on_test_passed(
+        self, test_name: str, duration_ms: float, details: Any = None
+    ) -> None:
         await self._send(
             "test_passed",
             {
                 "test_name": test_name,
                 "duration_ms": duration_ms,
+                "details": details,
             },
         )
 
