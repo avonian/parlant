@@ -32,6 +32,7 @@ from parlant.core.engines.alpha.tool_calling.tool_caller import (
     clear_tool_mock_queue,
 )
 from parlant.core.loggers import Logger
+from parlant.core.nlp.service import NLPService
 from parlant.core.test_suites import (
     TestRun,
     FailureDetails,
@@ -159,6 +160,7 @@ class TestSuiteModule:
         test_suite_store: TestSuiteStore,
         agent_store: AgentStore,
         background_task_service: BackgroundTaskService,
+        nlp_service: NLPService,
         server_url: str = "http://localhost:8800",
     ) -> None:
         """Initialize the test suite module.
@@ -168,12 +170,14 @@ class TestSuiteModule:
             test_suite_store: Store for test suite persistence.
             agent_store: Store for agent lookup.
             background_task_service: Service for managing background tasks.
+            nlp_service: NLP service for test assertion evaluation.
             server_url: URL of the Parlant server for test execution.
         """
         self._logger = logger
         self._store = test_suite_store
         self._agent_store = agent_store
         self._background_task_service = background_task_service
+        self._nlp_service = nlp_service
         self._server_url = server_url
 
     # TestSuite CRUD
@@ -658,6 +662,7 @@ class TestSuiteModule:
             server_url=self._server_url,
             agent_id=str(agent_id),
             customer_id=str(scenario.customer_id) if scenario.customer_id else None,
+            nlp_service=lambda _: self._nlp_service,
         )
 
         # Collect tool steps to register as mock expectations
