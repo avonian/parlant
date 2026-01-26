@@ -17,12 +17,14 @@
 Provides the application-level interface for test suite management and execution.
 """
 
+import asyncio
 import re
 import time
 from datetime import datetime, timezone
-from typing import TYPE_CHECKING, Any, Optional, Protocol, Sequence
+from typing import Any, Optional, Protocol, Sequence
 
 from parlant.core.agents import AgentId, AgentStore
+from parlant.core.background_tasks import BackgroundTaskService
 from parlant.core.customers import CustomerId
 from parlant.core.engines.alpha.tool_calling.tool_caller import (
     ToolMockExpectation,
@@ -50,15 +52,19 @@ from parlant.core.test_suites import (
     ToolCallRecord,
 )
 
-if TYPE_CHECKING:
-    pass
-
 
 # Define a minimal protocol for TestEventListener to avoid circular imports
 class TestEventListenerProtocol(Protocol):
     """Protocol for test event listeners."""
 
-    async def on_suite_start(self, suite_name: str, total_tests: int) -> None: ...
+    async def on_suite_start(
+        self,
+        suite_id: str,
+        suite_name: str,
+        agent_id: str,
+        total_tests: int,
+        test_names: list[str],
+    ) -> None: ...
     async def on_test_start(self, test_name: str) -> None: ...
     async def on_message_sent(self, test_name: str, role: str, content: str) -> None: ...
     async def on_message_received(
@@ -80,11 +86,22 @@ class TestEventListenerProtocol(Protocol):
     ) -> None: ...
     async def on_suite_end(self, report: Any) -> None: ...
 
+    def is_cancelled(self) -> bool:
+        """Check if the listener has been cancelled (e.g., WebSocket disconnected)."""
+        ...
+
 
 class NullEventListener:
     """No-op event listener."""
 
-    async def on_suite_start(self, suite_name: str, total_tests: int) -> None:
+    async def on_suite_start(
+        self,
+        suite_id: str,
+        suite_name: str,
+        agent_id: str,
+        total_tests: int,
+        test_names: list[str],
+    ) -> None:
         pass
 
     async def on_test_start(self, test_name: str) -> None:
@@ -123,6 +140,15 @@ class NullEventListener:
     async def on_suite_end(self, report: Any) -> None:
         pass
 
+    def is_cancelled(self) -> bool:
+        return False
+
+
+class TestRunCancelledError(Exception):
+    """Raised when a test run is cancelled."""
+
+    pass
+
 
 class TestSuiteModule:
     """Application module for test suite management and execution."""
@@ -132,6 +158,7 @@ class TestSuiteModule:
         logger: Logger,
         test_suite_store: TestSuiteStore,
         agent_store: AgentStore,
+        background_task_service: BackgroundTaskService,
         server_url: str = "http://localhost:8800",
     ) -> None:
         """Initialize the test suite module.
@@ -140,11 +167,13 @@ class TestSuiteModule:
             logger: Logger instance.
             test_suite_store: Store for test suite persistence.
             agent_store: Store for agent lookup.
+            background_task_service: Service for managing background tasks.
             server_url: URL of the Parlant server for test execution.
         """
         self._logger = logger
         self._store = test_suite_store
         self._agent_store = agent_store
+        self._background_task_service = background_task_service
         self._server_url = server_url
 
     # TestSuite CRUD
@@ -270,12 +299,14 @@ class TestSuiteModule:
         self,
         suite_id: TestSuiteId,
         listener: Optional[TestEventListenerProtocol] = None,
+        parallel: bool = False,
     ) -> TestRun:
         """Execute all scenarios in a test suite.
 
         Args:
             suite_id: The suite to run.
             listener: Optional event listener for real-time updates.
+            parallel: If True, run all scenarios concurrently.
 
         Returns:
             The completed TestRun with results.
@@ -297,33 +328,76 @@ class TestSuiteModule:
 
         listener = listener or NullEventListener()
 
-        # Calculate total tests (with repetitions)
+        # Calculate total tests and build test names list (with repetitions)
         total = sum(s.repetitions for s in scenarios)
-        await listener.on_suite_start(suite.name, total)
+        test_names = []
+        for scenario in scenarios:
+            if scenario.repetitions > 1:
+                for rep in range(1, scenario.repetitions + 1):
+                    test_names.append(f"{scenario.name}[rep_{rep}/{scenario.repetitions}]")
+            else:
+                test_names.append(scenario.name)
+        await listener.on_suite_start(
+            str(suite.id), suite.name, str(suite.agent_id), total, test_names
+        )
 
         start_time = time.time()
         scenario_results: list[TestScenarioResult] = []
         passed = 0
         failed = 0
         errors = 0
+        cancelled = False
 
-        # Execute each scenario
-        for scenario in scenarios:
-            for rep in range(1, scenario.repetitions + 1):
+        if parallel:
+            # Parallel execution - run all scenarios concurrently
+            async def run_scenario_task(
+                scenario: TestScenario, rep: int
+            ) -> Optional[TestScenarioResult]:
+                if listener.is_cancelled():
+                    return None
+
                 test_name = scenario.name
                 if scenario.repetitions > 1:
                     test_name = f"{scenario.name}[rep_{rep}/{scenario.repetitions}]"
 
                 try:
-                    result = await self._execute_scenario(
+                    return await self._execute_scenario(
                         scenario=scenario,
                         agent_id=suite.agent_id,
                         test_name=test_name,
                         repetition=rep,
                         listener=listener,
                     )
-                    scenario_results.append(result)
+                except TestRunCancelledError:
+                    return None
+                except Exception as e:
+                    self._logger.error(f"Error executing scenario {test_name}: {e}")
+                    await listener.on_test_failed(test_name, 0, str(e), None)
+                    return TestScenarioResult(
+                        scenario_id=scenario.id,
+                        scenario_name=scenario.name,
+                        status=TestStepStatus.ERROR,
+                        duration_ms=0,
+                        step_results=[],
+                        error=str(e),
+                        repetition=rep,
+                    )
 
+            # Create tasks for all scenarios and repetitions
+            tasks = [
+                run_scenario_task(scenario, rep)
+                for scenario in scenarios
+                for rep in range(1, scenario.repetitions + 1)
+            ]
+
+            results = await asyncio.gather(*tasks)
+
+            # Aggregate results
+            for result in results:
+                if result is None:
+                    cancelled = True
+                else:
+                    scenario_results.append(result)
                     if result.status == TestStepStatus.PASSED:
                         passed += 1
                     elif result.status == TestStepStatus.FAILED:
@@ -331,29 +405,73 @@ class TestSuiteModule:
                     elif result.status == TestStepStatus.ERROR:
                         errors += 1
 
-                except Exception as e:
-                    self._logger.error(f"Error executing scenario {test_name}: {e}")
-                    scenario_results.append(
-                        TestScenarioResult(
-                            scenario_id=scenario.id,
-                            scenario_name=scenario.name,
-                            status=TestStepStatus.ERROR,
-                            duration_ms=0,
-                            step_results=[],
-                            error=str(e),
+        else:
+            # Sequential execution - run one at a time
+            for scenario in scenarios:
+                # Check for cancellation between scenarios
+                if listener.is_cancelled():
+                    cancelled = True
+                    break
+
+                for rep in range(1, scenario.repetitions + 1):
+                    # Check for cancellation between repetitions
+                    if listener.is_cancelled():
+                        cancelled = True
+                        break
+
+                    test_name = scenario.name
+                    if scenario.repetitions > 1:
+                        test_name = f"{scenario.name}[rep_{rep}/{scenario.repetitions}]"
+
+                    try:
+                        result = await self._execute_scenario(
+                            scenario=scenario,
+                            agent_id=suite.agent_id,
+                            test_name=test_name,
                             repetition=rep,
+                            listener=listener,
                         )
-                    )
-                    errors += 1
-                    await listener.on_test_failed(test_name, 0, str(e), None)
+                        scenario_results.append(result)
+
+                        if result.status == TestStepStatus.PASSED:
+                            passed += 1
+                        elif result.status == TestStepStatus.FAILED:
+                            failed += 1
+                        elif result.status == TestStepStatus.ERROR:
+                            errors += 1
+
+                    except TestRunCancelledError:
+                        cancelled = True
+                        break
+                    except Exception as e:
+                        self._logger.error(f"Error executing scenario {test_name}: {e}")
+                        scenario_results.append(
+                            TestScenarioResult(
+                                scenario_id=scenario.id,
+                                scenario_name=scenario.name,
+                                status=TestStepStatus.ERROR,
+                                duration_ms=0,
+                                step_results=[],
+                                error=str(e),
+                                repetition=rep,
+                            )
+                        )
+                        errors += 1
+                        await listener.on_test_failed(test_name, 0, str(e), None)
+
+                if cancelled:
+                    break
 
         duration_ms = (time.time() - start_time) * 1000
+
+        # Determine final status
+        final_status = TestRunStatus.CANCELLED if cancelled else TestRunStatus.COMPLETED
 
         # Update run with final results
         run = await self._store.update_run(
             run.id,
             TestRunUpdateParams(
-                status=TestRunStatus.COMPLETED,
+                status=final_status,
                 completion_utc=datetime.now(timezone.utc),
                 total=total,
                 passed=passed,
@@ -385,21 +503,134 @@ class TestSuiteModule:
         scenario = await self._store.read_scenario(scenario_id)
         suite = await self._store.read_suite(scenario.suite_id)
 
+        # Create a run record so it appears in history
+        run = await self._store.create_run(
+            suite_id=suite.id,
+            agent_id=suite.agent_id,
+        )
+
+        # Update to running status
+        run = await self._store.update_run(
+            run.id,
+            TestRunUpdateParams(status=TestRunStatus.RUNNING),
+        )
+
         listener = listener or NullEventListener()
 
-        await listener.on_suite_start(scenario.name, 1)
+        start_time = time.time()
+        await listener.on_suite_start(
+            str(suite.id), scenario.name, str(suite.agent_id), 1, [scenario.name]
+        )
 
-        result = await self._execute_scenario(
-            scenario=scenario,
-            agent_id=suite.agent_id,
-            test_name=scenario.name,
-            repetition=1,
-            listener=listener,
+        cancelled = False
+        passed = 0
+        failed = 0
+        errors = 0
+
+        try:
+            result = await self._execute_scenario(
+                scenario=scenario,
+                agent_id=suite.agent_id,
+                test_name=scenario.name,
+                repetition=1,
+                listener=listener,
+            )
+
+            if result.status == TestStepStatus.PASSED:
+                passed = 1
+            elif result.status == TestStepStatus.FAILED:
+                failed = 1
+            elif result.status == TestStepStatus.ERROR:
+                errors = 1
+
+        except TestRunCancelledError:
+            cancelled = True
+            result = TestScenarioResult(
+                scenario_id=scenario.id,
+                scenario_name=scenario.name,
+                status=TestStepStatus.ERROR,
+                duration_ms=0,
+                step_results=[],
+                error="Test cancelled",
+                repetition=1,
+            )
+            errors = 1
+
+        duration_ms = (time.time() - start_time) * 1000
+
+        # Determine final status
+        final_status = TestRunStatus.CANCELLED if cancelled else TestRunStatus.COMPLETED
+
+        # Update run with final results
+        await self._store.update_run(
+            run.id,
+            TestRunUpdateParams(
+                status=final_status,
+                completion_utc=datetime.now(timezone.utc),
+                total=1,
+                passed=passed,
+                failed=failed,
+                errors=errors,
+                duration_ms=duration_ms,
+                scenario_results=[result],
+            ),
         )
 
         await listener.on_suite_end(None)  # type: ignore
 
         return result
+
+    async def run_all_suites(
+        self,
+        agent_id: Optional[AgentId] = None,
+        listener: Optional[TestEventListenerProtocol] = None,
+        parallel: bool = False,
+    ) -> Sequence[TestRun]:
+        """Execute all test suites.
+
+        Args:
+            agent_id: Optional agent ID to filter suites. If None, runs all suites.
+            listener: Optional event listener for real-time updates.
+            parallel: If True, run all suites and their scenarios concurrently.
+
+        Returns:
+            List of completed TestRun objects.
+        """
+        suites = await self._store.list_suites(agent_id=agent_id)
+
+        if not suites:
+            return []
+
+        if parallel:
+            # Parallel execution - run all suites concurrently
+            async def run_suite_task(suite: TestSuite) -> Optional[TestRun]:
+                if listener and listener.is_cancelled():
+                    return None
+                return await self.run_suite(
+                    suite_id=suite.id,
+                    listener=listener,
+                    parallel=True,  # Also run scenarios in parallel
+                )
+
+            tasks = [run_suite_task(suite) for suite in suites]
+            results = await asyncio.gather(*tasks)
+            return [r for r in results if r is not None]
+
+        else:
+            # Sequential execution
+            runs: list[TestRun] = []
+            for suite in suites:
+                # Check for cancellation before starting a new suite
+                if listener and listener.is_cancelled():
+                    break
+                run = await self.run_suite(
+                    suite_id=suite.id,
+                    listener=listener,
+                    parallel=False,
+                )
+                runs.append(run)
+
+            return runs
 
     async def _execute_scenario(
         self,
@@ -418,32 +649,34 @@ class TestSuiteModule:
 
         step_results: list[TestStepResult] = []
 
-        try:
-            # Lazy import to avoid circular imports at module load time
-            from parlant.testing.suite import Suite
-            from parlant.testing.response import Should
+        # Lazy import to avoid circular imports at module load time
+        from parlant.testing.suite import Suite
+        from parlant.testing.response import Should
 
-            # Create a Suite for this execution
-            test_suite = Suite(
-                server_url=self._server_url,
-                agent_id=str(agent_id),
-                customer_id=str(scenario.customer_id) if scenario.customer_id else None,
-            )
+        # Create a Suite for this execution
+        test_suite = Suite(
+            server_url=self._server_url,
+            agent_id=str(agent_id),
+            customer_id=str(scenario.customer_id) if scenario.customer_id else None,
+        )
 
-            # Collect tool steps to register as mock expectations
-            tool_expectations: list[ToolMockExpectation] = []
-            for step in scenario.steps:
-                if step.role == "tool" and step.tool_response is not None:
-                    tool_expectations.append(
-                        ToolMockExpectation(
-                            tool_id=step.content,  # content holds the tool_id for tool steps
-                            tool_response=step.tool_response,
-                            tool_arguments=step.tool_arguments,
-                        )
+        # Collect tool steps to register as mock expectations
+        tool_expectations: list[ToolMockExpectation] = []
+        for step in scenario.steps:
+            if step.role == "tool" and step.tool_response is not None:
+                tool_expectations.append(
+                    ToolMockExpectation(
+                        tool_id=step.content,  # content holds the tool_id for tool steps
+                        tool_response=step.tool_response,
+                        tool_arguments=step.tool_arguments,
                     )
+                )
 
+        session_id: str | None = None
+        try:
             # Execute using session
             async with test_suite.session(transient=True) as session:
+                session_id = session.id
                 # Register tool mocks if any
                 if tool_expectations:
                     register_tool_mock_queue(session.id, tool_expectations)
@@ -452,6 +685,10 @@ class TestSuiteModule:
                     conversation_history: list[tuple[str, str]] = []
 
                     for idx, step in enumerate(scenario.steps):
+                        # Check for cancellation before each step
+                        if listener.is_cancelled():
+                            raise TestRunCancelledError()
+
                         # Skip tool steps - they're registered as mocks above
                         if step.role == "tool":
                             continue
@@ -673,6 +910,12 @@ class TestSuiteModule:
                     if tool_expectations:
                         clear_tool_mock_queue(session.id)
 
+        except TestRunCancelledError:
+            # Test was cancelled - emit proper cancelled event
+            duration_ms = (time.time() - start_time) * 1000
+            await listener.on_test_failed(test_name, duration_ms, "Test cancelled", None)
+            raise  # Re-raise so caller knows it was cancelled
+
         except Exception as e:
             duration_ms = (time.time() - start_time) * 1000
             await listener.on_test_failed(test_name, duration_ms, str(e), None)
@@ -686,3 +929,11 @@ class TestSuiteModule:
                 error=str(e),
                 repetition=repetition,
             )
+        finally:
+            # Wait for any background processing to complete before deleting
+            if session_id:
+                await self._background_task_service.wait_for_task(
+                    tag=f"process-session({session_id})",
+                    timeout=5.0,
+                )
+            await test_suite.delete_queued_sessions()

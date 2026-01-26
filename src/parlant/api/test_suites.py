@@ -18,6 +18,8 @@ Provides REST API for managing test suites, scenarios, and test runs.
 Includes WebSocket endpoint for real-time test progress streaming.
 """
 
+import asyncio
+import json
 from datetime import datetime
 from typing import Annotated, Any, Dict, List, Literal, Sequence, TypeAlias
 
@@ -28,6 +30,7 @@ from starlette.websockets import WebSocketDisconnect
 from parlant.api import common
 from parlant.api.authorization import AuthorizationPolicy, Operation
 from parlant.api.common import ExampleJson, apigen_config
+from parlant.core.agents import AgentId
 from parlant.core.application import Application
 from parlant.core.common import DefaultBaseModel, ItemNotFoundError
 from parlant.core.customers import CustomerId
@@ -44,7 +47,6 @@ from parlant.core.test_suites import (
     TestSuite,
     TestSuiteId,
     TestSuiteUpdateParams,
-    ToolCallRecord,
 )
 
 API_GROUP = "test-suites"
@@ -233,10 +235,16 @@ failure_details_example: ExampleJson = {
 class FailureDetailsDTO(DefaultBaseModel, json_schema_extra={"example": failure_details_example}):
     """Structured details about a test failure."""
 
-    expected: str | None = Field(default=None, description="The assertion/condition that was expected")
+    expected: str | None = Field(
+        default=None, description="The assertion/condition that was expected"
+    )
     actual: str | None = Field(default=None, description="The actual response from the agent")
-    reasoning: str | None = Field(default=None, description="Explanation of why the assertion failed")
-    score: float | None = Field(default=None, ge=0.0, le=100.0, description="Assertion score (0-100)")
+    reasoning: str | None = Field(
+        default=None, description="Explanation of why the assertion failed"
+    )
+    score: float | None = Field(
+        default=None, ge=0.0, le=100.0, description="Assertion score (0-100)"
+    )
     tool_calls: List[ToolCallRecordDTO] | None = Field(
         default=None, description="Tool calls made during the failed step"
     )
@@ -553,6 +561,15 @@ class WebSocketTestEventListener:
     def __init__(self, websocket: WebSocket) -> None:
         self._websocket = websocket
         self._closed = False
+        self._cancel_requested = False
+
+    def is_cancelled(self) -> bool:
+        """Check if cancellation was requested or connection closed."""
+        return self._closed or self._cancel_requested
+
+    def request_cancel(self) -> None:
+        """Request cancellation of the test run."""
+        self._cancel_requested = True
 
     async def _send(self, event_type: str, data: Dict[str, Any]) -> None:
         """Send an event over the WebSocket."""
@@ -569,12 +586,22 @@ class WebSocketTestEventListener:
         except Exception:
             self._closed = True
 
-    async def on_suite_start(self, suite_name: str, total_tests: int) -> None:
+    async def on_suite_start(
+        self,
+        suite_id: str,
+        suite_name: str,
+        agent_id: str,
+        total_tests: int,
+        test_names: list[str],
+    ) -> None:
         await self._send(
             "suite_start",
             {
+                "suite_id": suite_id,
                 "suite_name": suite_name,
+                "agent_id": agent_id,
                 "total_tests": total_tests,
+                "test_names": test_names,
             },
         )
 
@@ -689,6 +716,66 @@ class WebSocketTestEventListener:
                 "duration_ms": getattr(report, "duration_ms", 0),
             },
         )
+
+
+async def _monitor_for_cancel(
+    websocket: WebSocket,
+    listener: WebSocketTestEventListener,
+) -> None:
+    """Monitor WebSocket for cancel messages or disconnection.
+
+    This runs concurrently with test execution. When cancel is received
+    or client disconnects, it sets the listener's cancel flag.
+    """
+    try:
+        while True:
+            # receive() returns a dict with 'type' key
+            message = await websocket.receive()
+
+            if message["type"] == "websocket.disconnect":
+                # Client closed connection
+                listener.request_cancel()
+                break
+            elif message["type"] == "websocket.receive":
+                # Client sent a message
+                text = message.get("text")
+                if text:
+                    try:
+                        data = json.loads(text)
+                        if isinstance(data, dict) and data.get("type") == "cancel":
+                            listener.request_cancel()
+                            break
+                    except json.JSONDecodeError:
+                        pass
+    except Exception:
+        # Any error means we should cancel
+        listener.request_cancel()
+
+
+async def _run_with_cancel_monitor(
+    websocket: WebSocket,
+    listener: WebSocketTestEventListener,
+    coro: Any,
+) -> Any:
+    """Run a coroutine while monitoring for cancellation.
+
+    Returns the coroutine result. If cancelled, the coroutine still completes
+    (with cancelled status) and result is returned.
+    """
+    # Start monitoring for cancel in background
+    monitor_task = asyncio.create_task(_monitor_for_cancel(websocket, listener))
+
+    try:
+        # Run the actual work
+        result = await coro
+        return result
+    finally:
+        # Stop monitoring
+        monitor_task.cancel()
+        try:
+            await monitor_task
+        except asyncio.CancelledError:
+            pass
 
 
 def create_router(
@@ -1209,14 +1296,17 @@ def create_router(
 
     # WebSocket endpoint for streaming test execution
 
-    @router.websocket("/{suite_id}/run-ws")
-    async def run_test_suite_ws(
+    @router.websocket("/{suite_id}/run")
+    async def run_test_suite(
         websocket: WebSocket,
         suite_id: str,
+        parallel: bool = False,
     ) -> None:
         """Run a test suite with real-time progress streaming via WebSocket.
 
         Connect to this endpoint to start a test run and receive real-time events.
+        Client can send {"type": "cancel"} to stop execution.
+        Use ?parallel=true to run all scenarios concurrently.
 
         Events sent over WebSocket:
         - suite_start: Test suite execution started
@@ -1230,44 +1320,55 @@ def create_router(
         - test_passed: Test passed
         - test_failed: Test failed
         - suite_end: Test suite execution completed
+        - run_complete: Final results with status
 
         The final message will include the complete test run results.
         """
         await websocket.accept()
 
+        listener = WebSocketTestEventListener(websocket)
+
         try:
-            # Create WebSocket listener
-            listener = WebSocketTestEventListener(websocket)
-
-            # Run the suite with the listener
-            run = await app.test_suites.run_suite(
-                suite_id=TestSuiteId(suite_id),
-                listener=listener,
+            # Run the suite while monitoring for cancel
+            run = await _run_with_cancel_monitor(
+                websocket,
+                listener,
+                app.test_suites.run_suite(
+                    suite_id=TestSuiteId(suite_id),
+                    listener=listener,
+                    parallel=parallel,
+                ),
             )
 
-            # Send final results
-            await websocket.send_json(
-                {
-                    "type": "run_complete",
-                    "data": {
-                        "run_id": run.id,
-                        "status": run.status.value,
-                        "total": run.total,
-                        "passed": run.passed,
-                        "failed": run.failed,
-                        "errors": run.errors,
-                        "duration_ms": run.duration_ms,
-                    },
-                }
-            )
+            # Send final results (even if cancelled - client needs to know)
+            try:
+                await websocket.send_json(
+                    {
+                        "type": "run_complete",
+                        "data": {
+                            "run_id": run.id,
+                            "status": run.status.value,
+                            "total": run.total,
+                            "passed": run.passed,
+                            "failed": run.failed,
+                            "errors": run.errors,
+                            "duration_ms": run.duration_ms,
+                        },
+                    }
+                )
+            except Exception:
+                pass  # Client may have disconnected
 
         except ItemNotFoundError as e:
-            await websocket.send_json(
-                {
-                    "type": "error",
-                    "data": {"message": str(e)},
-                }
-            )
+            try:
+                await websocket.send_json(
+                    {
+                        "type": "error",
+                        "data": {"message": str(e)},
+                    }
+                )
+            except Exception:
+                pass
         except WebSocketDisconnect:
             pass
         except Exception as e:
@@ -1286,48 +1387,174 @@ def create_router(
             except Exception:
                 pass
 
-    @router.websocket("/scenarios/{scenario_id}/run-ws")
-    async def run_test_scenario_ws(
+    @router.websocket("/scenarios/{scenario_id}/run")
+    async def run_test_scenario(
         websocket: WebSocket,
         scenario_id: str,
     ) -> None:
         """Run a single test scenario with real-time progress streaming via WebSocket.
 
-        Similar to run_test_suite_ws but executes a single scenario.
+        Similar to run_test_suite but executes a single scenario.
+        Client can send {"type": "cancel"} to stop execution.
         """
         await websocket.accept()
 
-        try:
-            # Create WebSocket listener
-            listener = WebSocketTestEventListener(websocket)
+        listener = WebSocketTestEventListener(websocket)
 
-            # Run the scenario with the listener
-            result = await app.test_suites.run_scenario(
-                scenario_id=TestScenarioId(scenario_id),
-                listener=listener,
+        try:
+            # Run the scenario while monitoring for cancel
+            result = await _run_with_cancel_monitor(
+                websocket,
+                listener,
+                app.test_suites.run_scenario(
+                    scenario_id=TestScenarioId(scenario_id),
+                    listener=listener,
+                ),
             )
 
             # Send final results
+            try:
+                await websocket.send_json(
+                    {
+                        "type": "scenario_complete",
+                        "data": {
+                            "scenario_id": result.scenario_id,
+                            "scenario_name": result.scenario_name,
+                            "status": result.status.value,
+                            "duration_ms": result.duration_ms,
+                            "error": result.error,
+                        },
+                    }
+                )
+            except Exception:
+                pass
+
+        except ItemNotFoundError as e:
+            try:
+                await websocket.send_json(
+                    {
+                        "type": "error",
+                        "data": {"message": str(e)},
+                    }
+                )
+            except Exception:
+                pass
+        except WebSocketDisconnect:
+            pass
+        except Exception as e:
+            try:
+                await websocket.send_json(
+                    {
+                        "type": "error",
+                        "data": {"message": f"Test execution error: {e}"},
+                    }
+                )
+            except Exception:
+                pass
+        finally:
+            try:
+                await websocket.close()
+            except Exception:
+                pass
+
+    @router.websocket("/run")
+    async def run_all_test_suites(
+        websocket: WebSocket,
+        agent_id: str | None = None,
+        parallel: bool = False,
+    ) -> None:
+        """Run all test suites with real-time progress streaming via WebSocket.
+
+        Optionally filter by agent_id to run only suites for a specific agent.
+        Client can send {"type": "cancel"} to stop execution.
+        Use ?parallel=true to run all suites and scenarios concurrently.
+        """
+        await websocket.accept()
+
+        listener = WebSocketTestEventListener(websocket)
+
+        try:
+            # Get all suites and their scenario counts first
+            suites = await app.test_suites.list_suites(
+                agent_id=AgentId(agent_id) if agent_id else None
+            )
+
+            # Build suite info with test counts and agent info
+            suite_info = []
+            total_tests = 0
+            agent_cache: dict[str, str] = {}  # agent_id -> agent_name
+            for suite in suites:
+                scenarios = await app.test_suites.list_scenarios(suite.id)
+                test_count = sum(s.repetitions for s in scenarios)
+                total_tests += test_count
+
+                # Get agent name (cached)
+                agent_id_str = str(suite.agent_id)
+                if agent_id_str not in agent_cache:
+                    try:
+                        agent = await app.agents.read(agent_id=suite.agent_id)
+                        agent_cache[agent_id_str] = agent.name
+                    except Exception:
+                        agent_cache[agent_id_str] = agent_id_str
+
+                suite_info.append(
+                    {
+                        "suite_id": str(suite.id),
+                        "suite_name": suite.name,
+                        "test_count": test_count,
+                        "agent_id": agent_id_str,
+                        "agent_name": agent_cache[agent_id_str],
+                    }
+                )
+
+            # Send initial event with all suite info
             await websocket.send_json(
                 {
-                    "type": "scenario_complete",
+                    "type": "all_suites_start",
                     "data": {
-                        "scenario_id": result.scenario_id,
-                        "scenario_name": result.scenario_name,
-                        "status": result.status.value,
-                        "duration_ms": result.duration_ms,
-                        "error": result.error,
+                        "total_suites": len(suites),
+                        "total_tests": total_tests,
+                        "suites": suite_info,
                     },
                 }
             )
 
-        except ItemNotFoundError as e:
-            await websocket.send_json(
-                {
-                    "type": "error",
-                    "data": {"message": str(e)},
-                }
+            # Run all suites while monitoring for cancel
+            runs = await _run_with_cancel_monitor(
+                websocket,
+                listener,
+                app.test_suites.run_all_suites(
+                    agent_id=AgentId(agent_id) if agent_id else None,
+                    listener=listener,
+                    parallel=parallel,
+                ),
             )
+
+            # Send final results
+            total_passed = sum(r.passed for r in runs)
+            total_failed = sum(r.failed for r in runs)
+            total_errors = sum(r.errors for r in runs)
+            total_tests = sum(r.total for r in runs)
+            total_duration = sum(r.duration_ms for r in runs)
+
+            try:
+                await websocket.send_json(
+                    {
+                        "type": "all_suites_complete",
+                        "data": {
+                            "total_suites": len(runs),
+                            "total_tests": total_tests,
+                            "passed": total_passed,
+                            "failed": total_failed,
+                            "errors": total_errors,
+                            "duration_ms": total_duration,
+                            "run_ids": [r.id for r in runs],
+                        },
+                    }
+                )
+            except Exception:
+                pass
+
         except WebSocketDisconnect:
             pass
         except Exception as e:

@@ -82,17 +82,22 @@ DEFAULT_HOME_DIR = Path.home() / ".parlant"
     "--server-url",
     "-s",
     default=None,
-    help="URL of Parlant server (required for --suite-id/--scenario-id)",
+    help="URL of Parlant server for running database-stored tests",
 )
 @click.option(
     "--suite-id",
     default=None,
-    help="ID of test suite to run from database (requires --server-url)",
+    help="ID of specific test suite to run (requires --server-url)",
 )
 @click.option(
     "--scenario-id",
     default=None,
-    help="ID of single scenario to run from database (requires --server-url)",
+    help="ID of specific scenario to run (requires --server-url)",
+)
+@click.option(
+    "--agent-id",
+    default=None,
+    help="Run all test suites for this agent (requires --server-url)",
 )
 @click.option(
     "--data-dir",
@@ -111,14 +116,18 @@ def main(
     server_url: Optional[str],
     suite_id: Optional[str],
     scenario_id: Optional[str],
+    agent_id: Optional[str],
     data_dir: Optional[str],
 ) -> None:
     """Run Parlant agent tests.
 
     PATHS: One or more files or directories containing test files.
 
-    Alternatively, use --server-url with --suite-id or --scenario-id to run
-    tests stored in the database.
+    Alternatively, use --server-url to run tests stored in the database:
+      - --server-url alone runs all test suites
+      - --server-url --agent-id <id> runs all suites for that agent
+      - --server-url --suite-id <id> runs a specific suite
+      - --server-url --scenario-id <id> runs a specific scenario
 
     Examples:
 
@@ -128,26 +137,35 @@ def main(
 
         parlant-test tests/ --parallel 4 --output results.json
 
+        parlant-test --server-url http://localhost:8800
+
+        parlant-test --server-url http://localhost:8800 --agent-id ag_abc123
+
         parlant-test --server-url http://localhost:8800 --suite-id ts_abc123
     """
     console = Console()
 
     # Validate options
-    database_mode = suite_id is not None or scenario_id is not None
+    database_mode = server_url is not None
     if database_mode:
-        if not server_url:
-            console.print(
-                "[bold red]Error:[/bold red] --suite-id and --scenario-id require --server-url"
-            )
-            sys.exit(2)
         if paths:
-            console.print("[bold red]Error:[/bold red] Cannot combine PATHS with --suite-id")
+            console.print("[bold red]Error:[/bold red] Cannot combine PATHS with --server-url")
+            sys.exit(2)
+        # Check for conflicting options
+        specified = [x for x in [suite_id, scenario_id, agent_id] if x is not None]
+        if len(specified) > 1:
+            console.print(
+                "[bold red]Error:[/bold red] --suite-id, --scenario-id, and --agent-id are mutually exclusive"
+            )
             sys.exit(2)
     else:
-        if not paths:
+        if suite_id or scenario_id or agent_id:
             console.print(
-                "[bold red]Error:[/bold red] Either PATHS or --suite-id/--scenario-id is required"
+                "[bold red]Error:[/bold red] --suite-id, --scenario-id, and --agent-id require --server-url"
             )
+            sys.exit(2)
+        if not paths:
+            console.print("[bold red]Error:[/bold red] Either PATHS or --server-url is required")
             sys.exit(2)
 
     exit_code = 0
@@ -161,6 +179,7 @@ def main(
                     server_url=server_url,
                     suite_id=suite_id,
                     scenario_id=scenario_id,
+                    agent_id=agent_id,
                     data_dir=data_dir,
                     pattern=pattern,
                     parallel=parallel,
@@ -293,6 +312,7 @@ async def _run_from_database(
     server_url: str,
     suite_id: Optional[str],
     scenario_id: Optional[str],
+    agent_id: Optional[str],
     data_dir: Optional[str],
     pattern: Optional[str],
     parallel: int,
@@ -304,6 +324,7 @@ async def _run_from_database(
     """Run tests from local database."""
     from parlant.adapters.db.json_file import JSONFileDocumentDatabase
     from parlant.core.common import IdGenerator
+    from parlant.core.agents import AgentId
     from parlant.core.loggers import LogLevel, Logger
     from parlant.core.test_suites import (
         TestScenario,
@@ -367,6 +388,7 @@ async def _run_from_database(
 
             try:
                 if suite_id:
+                    # Run specific suite
                     suite = await store.read_suite(TestSuiteId(suite_id))
                     scenarios = await store.list_scenarios(TestSuiteId(suite_id))
                     suites_to_run.append((suite, scenarios))
@@ -374,10 +396,25 @@ async def _run_from_database(
                         f"[dim]Found suite '{suite.name}' with {len(scenarios)} scenario(s)[/dim]"
                     )
                 elif scenario_id:
+                    # Run specific scenario
                     scenario = await store.read_scenario(TestScenarioId(scenario_id))
                     suite = await store.read_suite(scenario.suite_id)
                     suites_to_run.append((suite, [scenario]))
                     console.print(f"[dim]Found scenario '{scenario.name}'[/dim]")
+                else:
+                    # Run all suites (optionally filtered by agent_id)
+                    agent_filter = AgentId(agent_id) if agent_id else None
+                    all_suites = await store.list_suites(agent_id=agent_filter)
+                    for suite in all_suites:
+                        scenarios = await store.list_scenarios(suite.id)
+                        if scenarios:  # Only include suites with scenarios
+                            suites_to_run.append((suite, scenarios))
+                    if agent_id:
+                        console.print(
+                            f"[dim]Found {len(suites_to_run)} suite(s) for agent {agent_id}[/dim]"
+                        )
+                    else:
+                        console.print(f"[dim]Found {len(suites_to_run)} suite(s)[/dim]")
             except Exception as e:
                 console.print(f"[bold red]Error:[/bold red] {e}")
                 return 2
