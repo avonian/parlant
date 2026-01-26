@@ -20,6 +20,7 @@ from parlant.core.agents import AgentId, AgentStore
 from parlant.core.test_suites import (
     TestStep,
     TestSuiteStore,
+    TestRunStore,
     TestRunStatus,
     TestRunUpdateParams,
     TestStepStatus,
@@ -508,6 +509,7 @@ async def test_that_a_test_run_can_be_read_via_api(
     agent_id: AgentId,
 ) -> None:
     test_suite_store = container[TestSuiteStore]
+    test_run_store = container[TestRunStore]
 
     suite = await test_suite_store.create_suite(
         agent_id=agent_id,
@@ -515,7 +517,7 @@ async def test_that_a_test_run_can_be_read_via_api(
         description="",
     )
 
-    run = await test_suite_store.create_run(
+    run = await test_run_store.create_run(
         suite_id=suite.id,
         agent_id=agent_id,
     )
@@ -544,6 +546,7 @@ async def test_that_test_runs_can_be_listed_via_api(
     agent_id: AgentId,
 ) -> None:
     test_suite_store = container[TestSuiteStore]
+    test_run_store = container[TestRunStore]
 
     suite = await test_suite_store.create_suite(
         agent_id=agent_id,
@@ -551,8 +554,8 @@ async def test_that_test_runs_can_be_listed_via_api(
         description="",
     )
 
-    await test_suite_store.create_run(suite_id=suite.id, agent_id=agent_id)
-    await test_suite_store.create_run(suite_id=suite.id, agent_id=agent_id)
+    await test_run_store.create_run(suite_id=suite.id, agent_id=agent_id)
+    await test_run_store.create_run(suite_id=suite.id, agent_id=agent_id)
 
     response = await async_client.get("/test-suites/runs")
 
@@ -568,6 +571,7 @@ async def test_that_test_runs_can_be_filtered_by_suite_via_api(
     agent_id: AgentId,
 ) -> None:
     test_suite_store = container[TestSuiteStore]
+    test_run_store = container[TestRunStore]
 
     suite_1 = await test_suite_store.create_suite(
         agent_id=agent_id,
@@ -580,9 +584,9 @@ async def test_that_test_runs_can_be_filtered_by_suite_via_api(
         description="",
     )
 
-    await test_suite_store.create_run(suite_id=suite_1.id, agent_id=agent_id)
-    await test_suite_store.create_run(suite_id=suite_1.id, agent_id=agent_id)
-    await test_suite_store.create_run(suite_id=suite_2.id, agent_id=agent_id)
+    await test_run_store.create_run(suite_id=suite_1.id, agent_id=agent_id)
+    await test_run_store.create_run(suite_id=suite_1.id, agent_id=agent_id)
+    await test_run_store.create_run(suite_id=suite_2.id, agent_id=agent_id)
 
     response = await async_client.get(f"/test-suites/runs?suite_id={suite_1.id}")
 
@@ -599,6 +603,7 @@ async def test_that_a_test_run_can_be_deleted_via_api(
     agent_id: AgentId,
 ) -> None:
     test_suite_store = container[TestSuiteStore]
+    test_run_store = container[TestRunStore]
 
     suite = await test_suite_store.create_suite(
         agent_id=agent_id,
@@ -606,7 +611,7 @@ async def test_that_a_test_run_can_be_deleted_via_api(
         description="",
     )
 
-    run = await test_suite_store.create_run(
+    run = await test_run_store.create_run(
         suite_id=suite.id,
         agent_id=agent_id,
     )
@@ -634,6 +639,7 @@ async def test_that_test_runs_can_be_bulk_deleted_via_api(
     agent_id: AgentId,
 ) -> None:
     test_suite_store = container[TestSuiteStore]
+    test_run_store = container[TestRunStore]
 
     suite = await test_suite_store.create_suite(
         agent_id=agent_id,
@@ -641,9 +647,9 @@ async def test_that_test_runs_can_be_bulk_deleted_via_api(
         description="",
     )
 
-    await test_suite_store.create_run(suite_id=suite.id, agent_id=agent_id)
-    await test_suite_store.create_run(suite_id=suite.id, agent_id=agent_id)
-    await test_suite_store.create_run(suite_id=suite.id, agent_id=agent_id)
+    await test_run_store.create_run(suite_id=suite.id, agent_id=agent_id)
+    await test_run_store.create_run(suite_id=suite.id, agent_id=agent_id)
+    await test_run_store.create_run(suite_id=suite.id, agent_id=agent_id)
 
     response = await async_client.delete("/test-suites/runs")
 
@@ -663,6 +669,7 @@ async def test_that_test_runs_can_be_bulk_deleted_by_suite_via_api(
     agent_id: AgentId,
 ) -> None:
     test_suite_store = container[TestSuiteStore]
+    test_run_store = container[TestRunStore]
 
     suite_1 = await test_suite_store.create_suite(
         agent_id=agent_id,
@@ -675,9 +682,9 @@ async def test_that_test_runs_can_be_bulk_deleted_by_suite_via_api(
         description="",
     )
 
-    await test_suite_store.create_run(suite_id=suite_1.id, agent_id=agent_id)
-    await test_suite_store.create_run(suite_id=suite_1.id, agent_id=agent_id)
-    await test_suite_store.create_run(suite_id=suite_2.id, agent_id=agent_id)
+    await test_run_store.create_run(suite_id=suite_1.id, agent_id=agent_id)
+    await test_run_store.create_run(suite_id=suite_1.id, agent_id=agent_id)
+    await test_run_store.create_run(suite_id=suite_2.id, agent_id=agent_id)
 
     response = await async_client.delete(f"/test-suites/runs?suite_id={suite_1.id}")
 
@@ -699,6 +706,7 @@ async def test_that_test_run_includes_scenario_results(
     agent_id: AgentId,
 ) -> None:
     test_suite_store = container[TestSuiteStore]
+    test_run_store = container[TestRunStore]
 
     suite = await test_suite_store.create_suite(
         agent_id=agent_id,
@@ -713,7 +721,7 @@ async def test_that_test_run_includes_scenario_results(
         steps=[TestStep(role="customer", content="Hello")],
     )
 
-    run = await test_suite_store.create_run(
+    run = await test_run_store.create_run(
         suite_id=suite.id,
         agent_id=agent_id,
     )
@@ -730,7 +738,7 @@ async def test_that_test_run_includes_scenario_results(
         )
     ]
 
-    await test_suite_store.update_run(
+    await test_run_store.update_run(
         run.id,
         TestRunUpdateParams(
             status=TestRunStatus.COMPLETED,

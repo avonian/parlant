@@ -104,6 +104,10 @@ from parlant.core.context_variables import (
     ContextVariableId,
     ContextVariableStore,
 )
+from parlant.core.test_suites import (
+    TestRunDocumentStore,
+    TestRunStore,
+)
 from parlant.core.emission.event_publisher import EventPublisherFactory
 from parlant.core.engines.alpha.guideline_matching.generic.common import (
     format_journey_node_guideline_id,
@@ -3130,6 +3134,8 @@ class Server:
         nlp_service: A factory function to create an NLP service instance. See `NLPServiceFactories` for available options.
         session_store: The session store to use for managing sessions.
         customer_store: The customer store to use for managing customers.
+        variable_store: The variable store to use for managing context variables.
+        test_run_store: The test run store to use for managing test run results.
         log_level: The logging level for the server.
         modules: A list of module names to load for the server.
         migrate: Whether to allow database migrations on startup (if needed).
@@ -3152,6 +3158,7 @@ class Server:
         session_store: Literal["transient", "local"] | str | SessionStore = "transient",
         customer_store: Literal["transient", "local"] | str | CustomerStore = "transient",
         variable_store: Literal["transient", "local"] | str | ContextVariableStore = "transient",
+        test_run_store: Literal["transient", "local"] | str | TestRunStore = "transient",
         log_level: LogLevel = LogLevel.INFO,
         modules: list[str] = [],
         migrate: bool = False,
@@ -3173,6 +3180,7 @@ class Server:
         self._session_store = session_store
         self._customer_store = customer_store
         self._context_variable_store = variable_store
+        self._test_run_store = test_run_store
 
         self._configure_hooks = configure_hooks
         self._configure_container = configure_container
@@ -4290,6 +4298,16 @@ class Server:
                     ContextVariableDocumentStore,
                     self._context_variable_store,
                     "context_variables",
+                    id_generator=c()[IdGenerator],
+                )
+
+            if isinstance(self._test_run_store, TestRunStore):
+                c()[TestRunStore] = self._test_run_store
+            else:
+                c()[TestRunStore] = await make_persistable_store(
+                    TestRunDocumentStore,
+                    self._test_run_store,
+                    "test_runs",
                     id_generator=c()[IdGenerator],
                 )
 

@@ -47,6 +47,8 @@ from parlant.core.test_suites import (
     TestStepStatus,
     TestSuiteDocumentStore,
     TestSuiteStore,
+    TestRunDocumentStore,
+    TestRunStore,
     TestRunStatus,
     TestRunUpdateParams,
 )
@@ -62,6 +64,17 @@ async def test_suite_store(
     id_generator: IdGenerator,
 ) -> AsyncIterator[TestSuiteStore]:
     async with TestSuiteDocumentStore(
+        id_generator=id_generator,
+        database=TransientDocumentDatabase(),
+    ) as store:
+        yield store
+
+
+@fixture
+async def test_run_store(
+    id_generator: IdGenerator,
+) -> AsyncIterator[TestRunStore]:
+    async with TestRunDocumentStore(
         id_generator=id_generator,
         database=TransientDocumentDatabase(),
     ) as store:
@@ -140,6 +153,7 @@ async def test_that_tool_steps_are_serialized_correctly(
 
 async def test_that_run_results_are_stored_correctly(
     test_suite_store: TestSuiteStore,
+    test_run_store: TestRunStore,
 ) -> None:
     """Verify complex run results survive round-trip through store."""
     agent_id = AgentId("agent_123")
@@ -157,7 +171,7 @@ async def test_that_run_results_are_stored_correctly(
         steps=[TestStep(role="customer", content="Hello")],
     )
 
-    run = await test_suite_store.create_run(
+    run = await test_run_store.create_run(
         suite_id=suite.id,
         agent_id=agent_id,
     )
@@ -173,7 +187,7 @@ async def test_that_run_results_are_stored_correctly(
         )
     ]
 
-    await test_suite_store.update_run(
+    await test_run_store.update_run(
         run.id,
         TestRunUpdateParams(
             status=TestRunStatus.COMPLETED,
@@ -187,7 +201,7 @@ async def test_that_run_results_are_stored_correctly(
     )
 
     # Read back and verify
-    read_run = await test_suite_store.read_run(run.id)
+    read_run = await test_run_store.read_run(run.id)
 
     assert read_run.status == TestRunStatus.COMPLETED
     assert read_run.total == 1
@@ -307,6 +321,7 @@ async def test_suite_module(container: Container) -> TestSuiteModule:
     return TestSuiteModule(
         logger=container[Logger],
         test_suite_store=container[TestSuiteStore],
+        test_run_store=container[TestRunStore],
         agent_store=container[AgentStore],
         background_task_service=container[BackgroundTaskService],
         nlp_service=container[NLPService],

@@ -298,11 +298,113 @@ class TestRunUpdateParams(TypedDict, total=False):
     scenario_results: Sequence[TestScenarioResult]
 
 
-# Store interface
+# Store interfaces
+
+
+class TestRunStore(ABC):
+    """Abstract store for test runs."""
+
+    @abstractmethod
+    async def create_run(
+        self,
+        suite_id: TestSuiteId,
+        agent_id: AgentId,
+        creation_utc: Optional[datetime] = None,
+        id: Optional[TestRunId] = None,
+    ) -> TestRun:
+        """Create a new test run record.
+
+        Args:
+            suite_id: The suite being run.
+            agent_id: The agent being tested.
+            creation_utc: Start time (defaults to now).
+            id: Optional specific ID to use.
+
+        Returns:
+            The created TestRun with PENDING status.
+        """
+        ...
+
+    @abstractmethod
+    async def read_run(self, run_id: TestRunId) -> TestRun:
+        """Read a test run by ID.
+
+        Args:
+            run_id: The run ID.
+
+        Returns:
+            The TestRun.
+
+        Raises:
+            ItemNotFoundError: If run doesn't exist.
+        """
+        ...
+
+    @abstractmethod
+    async def list_runs(
+        self,
+        suite_id: Optional[TestSuiteId] = None,
+        limit: int = 50,
+    ) -> Sequence[TestRun]:
+        """List test runs, optionally filtered by suite.
+
+        Args:
+            suite_id: Filter to runs for this suite.
+            limit: Maximum number of runs to return.
+
+        Returns:
+            Sequence of TestRuns, ordered by creation_utc descending.
+        """
+        ...
+
+    @abstractmethod
+    async def update_run(
+        self,
+        run_id: TestRunId,
+        params: TestRunUpdateParams,
+    ) -> TestRun:
+        """Update a test run.
+
+        Args:
+            run_id: The run to update.
+            params: Fields to update.
+
+        Returns:
+            The updated TestRun.
+
+        Raises:
+            ItemNotFoundError: If run doesn't exist.
+        """
+        ...
+
+    @abstractmethod
+    async def delete_run(self, run_id: TestRunId) -> None:
+        """Delete a test run.
+
+        Args:
+            run_id: The run to delete.
+
+        Raises:
+            ItemNotFoundError: If run doesn't exist.
+        """
+        ...
+
+    @abstractmethod
+    async def delete_runs(self, suite_id: Optional[TestSuiteId] = None) -> int:
+        """Delete test runs, optionally filtered by suite.
+
+        Args:
+            suite_id: If provided, only delete runs for this suite.
+                      If None, delete all runs.
+
+        Returns:
+            Number of runs deleted.
+        """
+        ...
 
 
 class TestSuiteStore(ABC):
-    """Abstract store for test suites, scenarios, and runs."""
+    """Abstract store for test suites and scenarios."""
 
     # TestSuite CRUD
 
@@ -484,106 +586,6 @@ class TestSuiteStore(ABC):
         """
         ...
 
-    # TestRun operations
-
-    @abstractmethod
-    async def create_run(
-        self,
-        suite_id: TestSuiteId,
-        agent_id: AgentId,
-        creation_utc: Optional[datetime] = None,
-        id: Optional[TestRunId] = None,
-    ) -> TestRun:
-        """Create a new test run record.
-
-        Args:
-            suite_id: The suite being run.
-            agent_id: The agent being tested.
-            creation_utc: Start time (defaults to now).
-            id: Optional specific ID to use.
-
-        Returns:
-            The created TestRun with PENDING status.
-        """
-        ...
-
-    @abstractmethod
-    async def read_run(self, run_id: TestRunId) -> TestRun:
-        """Read a test run by ID.
-
-        Args:
-            run_id: The run ID.
-
-        Returns:
-            The TestRun.
-
-        Raises:
-            ItemNotFoundError: If run doesn't exist.
-        """
-        ...
-
-    @abstractmethod
-    async def list_runs(
-        self,
-        suite_id: Optional[TestSuiteId] = None,
-        limit: int = 50,
-    ) -> Sequence[TestRun]:
-        """List test runs, optionally filtered by suite.
-
-        Args:
-            suite_id: Filter to runs for this suite.
-            limit: Maximum number of runs to return.
-
-        Returns:
-            Sequence of TestRuns, ordered by creation_utc descending.
-        """
-        ...
-
-    @abstractmethod
-    async def update_run(
-        self,
-        run_id: TestRunId,
-        params: TestRunUpdateParams,
-    ) -> TestRun:
-        """Update a test run.
-
-        Args:
-            run_id: The run to update.
-            params: Fields to update.
-
-        Returns:
-            The updated TestRun.
-
-        Raises:
-            ItemNotFoundError: If run doesn't exist.
-        """
-        ...
-
-    @abstractmethod
-    async def delete_run(self, run_id: TestRunId) -> None:
-        """Delete a test run.
-
-        Args:
-            run_id: The run to delete.
-
-        Raises:
-            ItemNotFoundError: If run doesn't exist.
-        """
-        ...
-
-    @abstractmethod
-    async def delete_runs(self, suite_id: Optional[TestSuiteId] = None) -> int:
-        """Delete test runs, optionally filtered by suite.
-
-        Args:
-            suite_id: If provided, only delete runs for this suite.
-                      If None, delete all runs.
-
-        Returns:
-            Number of runs deleted.
-        """
-        ...
-
 
 # Document TypedDicts for persistence
 
@@ -690,7 +692,7 @@ class TestRunDocument(TypedDict, total=False):
 
 
 class TestSuiteDocumentStore(TestSuiteStore):
-    """Document store implementation for test suites, scenarios, and runs."""
+    """Document store implementation for test suites and scenarios."""
 
     VERSION = Version.from_string("0.1.0")
 
@@ -705,7 +707,6 @@ class TestSuiteDocumentStore(TestSuiteStore):
         self._allow_migration = allow_migration
         self._suite_collection: DocumentCollection[TestSuiteDocument]
         self._scenario_collection: DocumentCollection[TestScenarioDocument]
-        self._run_collection: DocumentCollection[TestRunDocument]
         self._lock = ReaderWriterLock()
 
     async def _suite_document_loader(self, doc: BaseDocument) -> Optional[TestSuiteDocument]:
@@ -720,12 +721,6 @@ class TestSuiteDocumentStore(TestSuiteStore):
             return cast(TestScenarioDocument, doc)
         return None
 
-    async def _run_document_loader(self, doc: BaseDocument) -> Optional[TestRunDocument]:
-        """Load and migrate run documents."""
-        if doc["version"] == "0.1.0":
-            return cast(TestRunDocument, doc)
-        return None
-
     async def __aenter__(self) -> Self:
         self._suite_collection = await self._database.get_or_create_collection(
             name="test_suites",
@@ -737,12 +732,6 @@ class TestSuiteDocumentStore(TestSuiteStore):
             name="test_scenarios",
             schema=TestScenarioDocument,
             document_loader=self._scenario_document_loader,
-        )
-
-        self._run_collection = await self._database.get_or_create_collection(
-            name="test_runs",
-            schema=TestRunDocument,
-            document_loader=self._run_document_loader,
         )
 
         return self
@@ -778,112 +767,6 @@ class TestSuiteDocumentStore(TestSuiteStore):
             should_weight=doc.get("should_weight", 1.0),
             tool_arguments=doc.get("tool_arguments"),
             tool_response=doc.get("tool_response"),
-        )
-
-    def _serialize_tool_call(self, tc: ToolCallRecord) -> ToolCallRecordDocument:
-        return ToolCallRecordDocument(
-            tool_id=tc.tool_id,
-            tool_name=tc.tool_name,
-            arguments=dict(tc.arguments),
-            result=tc.result,
-        )
-
-    def _deserialize_tool_call(self, doc: ToolCallRecordDocument) -> ToolCallRecord:
-        return ToolCallRecord(
-            tool_id=doc["tool_id"],
-            tool_name=doc["tool_name"],
-            arguments=doc["arguments"],
-            result=doc["result"],
-        )
-
-    def _serialize_step_result(self, result: TestStepResult) -> TestStepResultDocument:
-        return TestStepResultDocument(
-            step_index=result.step_index,
-            role=result.role,
-            content=result.content,
-            actual_response=result.actual_response,
-            tool_calls=[self._serialize_tool_call(tc) for tc in result.tool_calls]
-            if result.tool_calls
-            else None,
-            assertion=result.assertion,
-            assertion_passed=result.assertion_passed,
-            assertion_reasoning=result.assertion_reasoning,
-            assertion_score=result.assertion_score,
-            trace_id=result.trace_id,
-        )
-
-    def _deserialize_step_result(self, doc: TestStepResultDocument) -> TestStepResult:
-        tool_calls_doc = doc.get("tool_calls")
-        return TestStepResult(
-            step_index=doc["step_index"],
-            role=doc["role"],
-            content=doc["content"],
-            actual_response=doc.get("actual_response"),
-            tool_calls=[self._deserialize_tool_call(tc) for tc in tool_calls_doc]
-            if tool_calls_doc
-            else None,
-            assertion=doc.get("assertion"),
-            assertion_passed=doc.get("assertion_passed"),
-            assertion_reasoning=doc.get("assertion_reasoning"),
-            assertion_score=doc.get("assertion_score"),
-            trace_id=doc.get("trace_id"),
-        )
-
-    def _serialize_failure_details(
-        self, details: Optional[FailureDetails]
-    ) -> Optional[FailureDetailsDocument]:
-        if details is None:
-            return None
-        tool_calls_doc: Optional[list[ToolCallRecordDocument]] = None
-        if details.tool_calls:
-            tool_calls_doc = [self._serialize_tool_call(tc) for tc in details.tool_calls]
-        return FailureDetailsDocument(
-            expected=details.expected,
-            actual=details.actual,
-            reasoning=details.reasoning,
-            score=details.score,
-            tool_calls=tool_calls_doc,
-        )
-
-    def _deserialize_failure_details(
-        self, doc: Optional[FailureDetailsDocument]
-    ) -> Optional[FailureDetails]:
-        if doc is None:
-            return None
-        tool_calls: Optional[list[ToolCallRecord]] = None
-        tool_calls_doc = doc.get("tool_calls")
-        if tool_calls_doc:
-            tool_calls = [self._deserialize_tool_call(tc) for tc in tool_calls_doc]
-        return FailureDetails(
-            expected=doc.get("expected"),
-            actual=doc.get("actual"),
-            reasoning=doc.get("reasoning"),
-            score=doc.get("score"),
-            tool_calls=tool_calls,
-        )
-
-    def _serialize_scenario_result(self, result: TestScenarioResult) -> TestScenarioResultDocument:
-        return TestScenarioResultDocument(
-            scenario_id=result.scenario_id,
-            scenario_name=result.scenario_name,
-            status=result.status.value,
-            duration_ms=result.duration_ms,
-            step_results=[self._serialize_step_result(sr) for sr in result.step_results],
-            error=result.error,
-            failure_details=self._serialize_failure_details(result.failure_details),
-            repetition=result.repetition,
-        )
-
-    def _deserialize_scenario_result(self, doc: TestScenarioResultDocument) -> TestScenarioResult:
-        return TestScenarioResult(
-            scenario_id=TestScenarioId(doc["scenario_id"]),
-            scenario_name=doc["scenario_name"],
-            status=TestStepStatus(doc["status"]),
-            duration_ms=doc["duration_ms"],
-            step_results=[self._deserialize_step_result(sr) for sr in doc["step_results"]],
-            error=doc.get("error"),
-            failure_details=self._deserialize_failure_details(doc.get("failure_details")),
-            repetition=doc.get("repetition", 1),
         )
 
     def _serialize_suite(self, suite: TestSuite) -> TestSuiteDocument:
@@ -929,44 +812,6 @@ class TestSuiteDocumentStore(TestSuiteStore):
             customer_id=CustomerId(customer_id_str) if customer_id_str else None,
             repetitions=doc.get("repetitions", 1),
             creation_utc=datetime.fromisoformat(doc["creation_utc"]),
-        )
-
-    def _serialize_run(self, run: TestRun) -> TestRunDocument:
-        return TestRunDocument(
-            id=ObjectId(run.id),
-            version=self.VERSION.to_string(),
-            creation_utc=run.creation_utc.isoformat(),
-            completion_utc=run.completion_utc.isoformat() if run.completion_utc else None,
-            suite_id=run.suite_id,
-            agent_id=run.agent_id,
-            status=run.status.value,
-            total=run.total,
-            passed=run.passed,
-            failed=run.failed,
-            errors=run.errors,
-            duration_ms=run.duration_ms,
-            scenario_results=[self._serialize_scenario_result(sr) for sr in run.scenario_results],
-        )
-
-    def _deserialize_run(self, doc: TestRunDocument) -> TestRun:
-        completion_utc_str = doc.get("completion_utc")
-        return TestRun(
-            id=TestRunId(doc["id"]),
-            suite_id=TestSuiteId(doc["suite_id"]),
-            agent_id=AgentId(doc["agent_id"]),
-            status=TestRunStatus(doc["status"]),
-            creation_utc=datetime.fromisoformat(doc["creation_utc"]),
-            completion_utc=(
-                datetime.fromisoformat(completion_utc_str) if completion_utc_str else None
-            ),
-            total=doc.get("total", 0),
-            passed=doc.get("passed", 0),
-            failed=doc.get("failed", 0),
-            errors=doc.get("errors", 0),
-            duration_ms=doc.get("duration_ms", 0.0),
-            scenario_results=[
-                self._deserialize_scenario_result(sr) for sr in doc.get("scenario_results", [])
-            ],
         )
 
     # TestSuite CRUD
@@ -1156,6 +1001,193 @@ class TestSuiteDocumentStore(TestSuiteStore):
 
         if not result.deleted_document:
             raise ItemNotFoundError(item_id=UniqueId(scenario_id))
+
+
+class TestRunDocumentStore(TestRunStore):
+    """Document store implementation for test runs."""
+
+    VERSION = Version.from_string("0.1.0")
+
+    def __init__(
+        self,
+        id_generator: IdGenerator,
+        database: DocumentDatabase,
+        allow_migration: bool = False,
+    ) -> None:
+        self._id_generator = id_generator
+        self._database = database
+        self._allow_migration = allow_migration
+        self._run_collection: DocumentCollection[TestRunDocument]
+        self._lock = ReaderWriterLock()
+
+    async def _run_document_loader(self, doc: BaseDocument) -> Optional[TestRunDocument]:
+        """Load and migrate run documents."""
+        if doc["version"] == "0.1.0":
+            return cast(TestRunDocument, doc)
+        return None
+
+    async def __aenter__(self) -> Self:
+        self._run_collection = await self._database.get_or_create_collection(
+            name="test_runs",
+            schema=TestRunDocument,
+            document_loader=self._run_document_loader,
+        )
+
+        return self
+
+    async def __aexit__(
+        self,
+        exc_type: Optional[type[BaseException]],
+        exc_value: Optional[BaseException],
+        traceback: Optional[object],
+    ) -> None:
+        pass
+
+    # Serialization helpers
+
+    def _serialize_tool_call(self, tc: ToolCallRecord) -> ToolCallRecordDocument:
+        return ToolCallRecordDocument(
+            tool_id=tc.tool_id,
+            tool_name=tc.tool_name,
+            arguments=dict(tc.arguments),
+            result=tc.result,
+        )
+
+    def _deserialize_tool_call(self, doc: ToolCallRecordDocument) -> ToolCallRecord:
+        return ToolCallRecord(
+            tool_id=doc["tool_id"],
+            tool_name=doc["tool_name"],
+            arguments=doc["arguments"],
+            result=doc["result"],
+        )
+
+    def _serialize_step_result(self, result: TestStepResult) -> TestStepResultDocument:
+        return TestStepResultDocument(
+            step_index=result.step_index,
+            role=result.role,
+            content=result.content,
+            actual_response=result.actual_response,
+            tool_calls=[self._serialize_tool_call(tc) for tc in result.tool_calls]
+            if result.tool_calls
+            else None,
+            assertion=result.assertion,
+            assertion_passed=result.assertion_passed,
+            assertion_reasoning=result.assertion_reasoning,
+            assertion_score=result.assertion_score,
+            trace_id=result.trace_id,
+        )
+
+    def _deserialize_step_result(self, doc: TestStepResultDocument) -> TestStepResult:
+        tool_calls_doc = doc.get("tool_calls")
+        return TestStepResult(
+            step_index=doc["step_index"],
+            role=doc["role"],
+            content=doc["content"],
+            actual_response=doc.get("actual_response"),
+            tool_calls=[self._deserialize_tool_call(tc) for tc in tool_calls_doc]
+            if tool_calls_doc
+            else None,
+            assertion=doc.get("assertion"),
+            assertion_passed=doc.get("assertion_passed"),
+            assertion_reasoning=doc.get("assertion_reasoning"),
+            assertion_score=doc.get("assertion_score"),
+            trace_id=doc.get("trace_id"),
+        )
+
+    def _serialize_failure_details(
+        self, details: Optional[FailureDetails]
+    ) -> Optional[FailureDetailsDocument]:
+        if details is None:
+            return None
+        tool_calls_doc: Optional[list[ToolCallRecordDocument]] = None
+        if details.tool_calls:
+            tool_calls_doc = [self._serialize_tool_call(tc) for tc in details.tool_calls]
+        return FailureDetailsDocument(
+            expected=details.expected,
+            actual=details.actual,
+            reasoning=details.reasoning,
+            score=details.score,
+            tool_calls=tool_calls_doc,
+        )
+
+    def _deserialize_failure_details(
+        self, doc: Optional[FailureDetailsDocument]
+    ) -> Optional[FailureDetails]:
+        if doc is None:
+            return None
+        tool_calls: Optional[list[ToolCallRecord]] = None
+        tool_calls_doc = doc.get("tool_calls")
+        if tool_calls_doc:
+            tool_calls = [self._deserialize_tool_call(tc) for tc in tool_calls_doc]
+        return FailureDetails(
+            expected=doc.get("expected"),
+            actual=doc.get("actual"),
+            reasoning=doc.get("reasoning"),
+            score=doc.get("score"),
+            tool_calls=tool_calls,
+        )
+
+    def _serialize_scenario_result(self, result: TestScenarioResult) -> TestScenarioResultDocument:
+        return TestScenarioResultDocument(
+            scenario_id=result.scenario_id,
+            scenario_name=result.scenario_name,
+            status=result.status.value,
+            duration_ms=result.duration_ms,
+            step_results=[self._serialize_step_result(sr) for sr in result.step_results],
+            error=result.error,
+            failure_details=self._serialize_failure_details(result.failure_details),
+            repetition=result.repetition,
+        )
+
+    def _deserialize_scenario_result(self, doc: TestScenarioResultDocument) -> TestScenarioResult:
+        return TestScenarioResult(
+            scenario_id=TestScenarioId(doc["scenario_id"]),
+            scenario_name=doc["scenario_name"],
+            status=TestStepStatus(doc["status"]),
+            duration_ms=doc["duration_ms"],
+            step_results=[self._deserialize_step_result(sr) for sr in doc["step_results"]],
+            error=doc.get("error"),
+            failure_details=self._deserialize_failure_details(doc.get("failure_details")),
+            repetition=doc.get("repetition", 1),
+        )
+
+    def _serialize_run(self, run: TestRun) -> TestRunDocument:
+        return TestRunDocument(
+            id=ObjectId(run.id),
+            version=self.VERSION.to_string(),
+            creation_utc=run.creation_utc.isoformat(),
+            completion_utc=run.completion_utc.isoformat() if run.completion_utc else None,
+            suite_id=run.suite_id,
+            agent_id=run.agent_id,
+            status=run.status.value,
+            total=run.total,
+            passed=run.passed,
+            failed=run.failed,
+            errors=run.errors,
+            duration_ms=run.duration_ms,
+            scenario_results=[self._serialize_scenario_result(sr) for sr in run.scenario_results],
+        )
+
+    def _deserialize_run(self, doc: TestRunDocument) -> TestRun:
+        completion_utc_str = doc.get("completion_utc")
+        return TestRun(
+            id=TestRunId(doc["id"]),
+            suite_id=TestSuiteId(doc["suite_id"]),
+            agent_id=AgentId(doc["agent_id"]),
+            status=TestRunStatus(doc["status"]),
+            creation_utc=datetime.fromisoformat(doc["creation_utc"]),
+            completion_utc=(
+                datetime.fromisoformat(completion_utc_str) if completion_utc_str else None
+            ),
+            total=doc.get("total", 0),
+            passed=doc.get("passed", 0),
+            failed=doc.get("failed", 0),
+            errors=doc.get("errors", 0),
+            duration_ms=doc.get("duration_ms", 0.0),
+            scenario_results=[
+                self._deserialize_scenario_result(sr) for sr in doc.get("scenario_results", [])
+            ],
+        )
 
     # TestRun operations
 

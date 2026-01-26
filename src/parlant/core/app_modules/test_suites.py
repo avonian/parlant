@@ -38,6 +38,7 @@ from parlant.core.test_suites import (
     FailureDetails,
     TestRunId,
     TestRunStatus,
+    TestRunStore,
     TestRunUpdateParams,
     TestScenario,
     TestScenarioId,
@@ -158,6 +159,7 @@ class TestSuiteModule:
         self,
         logger: Logger,
         test_suite_store: TestSuiteStore,
+        test_run_store: TestRunStore,
         agent_store: AgentStore,
         background_task_service: BackgroundTaskService,
         nlp_service: NLPService,
@@ -167,7 +169,8 @@ class TestSuiteModule:
 
         Args:
             logger: Logger instance.
-            test_suite_store: Store for test suite persistence.
+            test_suite_store: Store for test suite and scenario persistence.
+            test_run_store: Store for test run persistence.
             agent_store: Store for agent lookup.
             background_task_service: Service for managing background tasks.
             nlp_service: NLP service for test assertion evaluation.
@@ -175,6 +178,7 @@ class TestSuiteModule:
         """
         self._logger = logger
         self._store = test_suite_store
+        self._run_store = test_run_store
         self._agent_store = agent_store
         self._background_task_service = background_task_service
         self._nlp_service = nlp_service
@@ -275,7 +279,7 @@ class TestSuiteModule:
 
     async def read_run(self, run_id: TestRunId) -> TestRun:
         """Read a test run by ID."""
-        return await self._store.read_run(run_id)
+        return await self._run_store.read_run(run_id)
 
     async def list_runs(
         self,
@@ -283,11 +287,11 @@ class TestSuiteModule:
         limit: int = 50,
     ) -> Sequence[TestRun]:
         """List test runs, optionally filtered by suite."""
-        return await self._store.list_runs(suite_id=suite_id, limit=limit)
+        return await self._run_store.list_runs(suite_id=suite_id, limit=limit)
 
     async def delete_run(self, run_id: TestRunId) -> None:
         """Delete a test run."""
-        return await self._store.delete_run(run_id)
+        return await self._run_store.delete_run(run_id)
 
     async def delete_runs(self, suite_id: Optional[TestSuiteId] = None) -> int:
         """Delete test runs, optionally filtered by suite.
@@ -295,7 +299,7 @@ class TestSuiteModule:
         Returns:
             Number of runs deleted.
         """
-        return await self._store.delete_runs(suite_id=suite_id)
+        return await self._run_store.delete_runs(suite_id=suite_id)
 
     # Test execution
 
@@ -319,13 +323,13 @@ class TestSuiteModule:
         scenarios = await self._store.list_scenarios(suite_id)
 
         # Create the run record
-        run = await self._store.create_run(
+        run = await self._run_store.create_run(
             suite_id=suite_id,
             agent_id=suite.agent_id,
         )
 
         # Update to running status
-        run = await self._store.update_run(
+        run = await self._run_store.update_run(
             run.id,
             TestRunUpdateParams(status=TestRunStatus.RUNNING),
         )
@@ -472,7 +476,7 @@ class TestSuiteModule:
         final_status = TestRunStatus.CANCELLED if cancelled else TestRunStatus.COMPLETED
 
         # Update run with final results
-        run = await self._store.update_run(
+        run = await self._run_store.update_run(
             run.id,
             TestRunUpdateParams(
                 status=final_status,
@@ -508,13 +512,13 @@ class TestSuiteModule:
         suite = await self._store.read_suite(scenario.suite_id)
 
         # Create a run record so it appears in history
-        run = await self._store.create_run(
+        run = await self._run_store.create_run(
             suite_id=suite.id,
             agent_id=suite.agent_id,
         )
 
         # Update to running status
-        run = await self._store.update_run(
+        run = await self._run_store.update_run(
             run.id,
             TestRunUpdateParams(status=TestRunStatus.RUNNING),
         )
@@ -566,7 +570,7 @@ class TestSuiteModule:
         final_status = TestRunStatus.CANCELLED if cancelled else TestRunStatus.COMPLETED
 
         # Update run with final results
-        await self._store.update_run(
+        await self._run_store.update_run(
             run.id,
             TestRunUpdateParams(
                 status=final_status,
