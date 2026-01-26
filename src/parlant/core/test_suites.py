@@ -173,6 +173,7 @@ class TestStepResult:
         assertion_passed: Whether the assertion passed.
         assertion_reasoning: NLP reasoning for pass/fail.
         assertion_score: Normalized score from 0-100.
+        trace_id: Trace ID for debugging (agent steps only).
     """
 
     step_index: int
@@ -184,6 +185,7 @@ class TestStepResult:
     assertion_passed: Optional[bool] = None
     assertion_reasoning: Optional[str] = None
     assertion_score: Optional[float] = None
+    trace_id: Optional[str] = None
 
 
 @dataclass(frozen=True)
@@ -622,6 +624,7 @@ class TestStepResultDocument(TypedDict):
     assertion_passed: Optional[bool]
     assertion_reasoning: Optional[str]
     assertion_score: Optional[float]
+    trace_id: Optional[str]
 
 
 class TestScenarioResultDocument(TypedDict):
@@ -774,6 +777,7 @@ class TestSuiteDocumentStore(TestSuiteStore):
             assertion_passed=result.assertion_passed,
             assertion_reasoning=result.assertion_reasoning,
             assertion_score=result.assertion_score,
+            trace_id=result.trace_id,
         )
 
     def _deserialize_step_result(self, doc: TestStepResultDocument) -> TestStepResult:
@@ -790,6 +794,7 @@ class TestSuiteDocumentStore(TestSuiteStore):
             assertion_passed=doc.get("assertion_passed"),
             assertion_reasoning=doc.get("assertion_reasoning"),
             assertion_score=doc.get("assertion_score"),
+            trace_id=doc.get("trace_id"),
         )
 
     def _serialize_scenario_result(self, result: TestScenarioResult) -> TestScenarioResultDocument:

@@ -19,7 +19,7 @@ Includes WebSocket endpoint for real-time test progress streaming.
 """
 
 from datetime import datetime
-from typing import Annotated, Any, Dict, List, Literal, Optional, Sequence, TypeAlias
+from typing import Annotated, Any, Dict, List, Literal, Sequence, TypeAlias
 
 from fastapi import APIRouter, HTTPException, Path, Query, Request, WebSocket, status
 from pydantic import Field
@@ -202,15 +202,34 @@ class TestScenarioDTO(DefaultBaseModel, json_schema_extra={"example": test_scena
     creation_utc: datetime = Field(description="When this scenario was created")
 
 
+tool_call_record_example: ExampleJson = {
+    "tool_id": "local:get_available_slots",
+    "tool_name": "get_available_slots",
+    "arguments": {"date": "2024-01-15"},
+    "result": {"slots": ["09:00", "10:00", "14:00"]},
+}
+
+
+class ToolCallRecordDTO(DefaultBaseModel, json_schema_extra={"example": tool_call_record_example}):
+    """Record of a tool call made during a test step."""
+
+    tool_id: str = Field(description="Full tool identifier (service:tool_name)")
+    tool_name: str = Field(description="Tool name")
+    arguments: Dict[str, Any] = Field(description="Arguments passed to the tool")
+    result: Any = Field(description="Result returned by the tool")
+
+
 test_step_result_example: ExampleJson = {
     "step_index": 0,
     "role": "customer",
     "content": "Hello!",
     "actual_response": "Hello! How can I help you today?",
+    "tool_calls": [tool_call_record_example],
     "assertion": "greet the customer warmly",
     "assertion_passed": True,
     "assertion_reasoning": "The response warmly greets the customer",
     "assertion_score": 100.0,
+    "trace_id": "abc123-def456-ghi789",
 }
 
 
@@ -221,12 +240,16 @@ class TestStepResultDTO(DefaultBaseModel, json_schema_extra={"example": test_ste
     role: str = Field(description="Role that performed this step")
     content: str = Field(description="Original step content")
     actual_response: str | None = Field(default=None, description="Actual agent response")
+    tool_calls: List[ToolCallRecordDTO] | None = Field(
+        default=None, description="Tool calls made during this step"
+    )
     assertion: str | None = Field(default=None, description="Assertion that was tested")
     assertion_passed: bool | None = Field(default=None, description="Whether assertion passed")
     assertion_reasoning: str | None = Field(default=None, description="NLP reasoning for pass/fail")
     assertion_score: float | None = Field(
         default=None, ge=0.0, le=100.0, description="Assertion score (0-100)"
     )
+    trace_id: str | None = Field(default=None, description="Trace ID for debugging agent responses")
 
 
 test_scenario_result_example: ExampleJson = {
@@ -409,15 +432,29 @@ def _test_scenario_to_dto(scenario: TestScenario) -> TestScenarioDTO:
 
 
 def _test_step_result_to_dto(result: TestStepResult) -> TestStepResultDTO:
+    tool_calls_dto: List[ToolCallRecordDTO] | None = None
+    if result.tool_calls:
+        tool_calls_dto = [
+            ToolCallRecordDTO(
+                tool_id=tc.tool_id,
+                tool_name=tc.tool_name,
+                arguments=dict(tc.arguments),
+                result=tc.result,
+            )
+            for tc in result.tool_calls
+        ]
+
     return TestStepResultDTO(
         step_index=result.step_index,
         role=result.role,
         content=result.content,
         actual_response=result.actual_response,
+        tool_calls=tool_calls_dto,
         assertion=result.assertion,
         assertion_passed=result.assertion_passed,
         assertion_reasoning=result.assertion_reasoning,
         assertion_score=result.assertion_score,
+        trace_id=result.trace_id,
     )
 
 
@@ -517,7 +554,12 @@ class WebSocketTestEventListener:
         )
 
     async def on_message_received(
-        self, test_name: str, role: str, content: str, tool_calls: Any = None
+        self,
+        test_name: str,
+        role: str,
+        content: str,
+        tool_calls: Any = None,
+        trace_id: str | None = None,
     ) -> None:
         await self._send(
             "message_received",
@@ -526,6 +568,7 @@ class WebSocketTestEventListener:
                 "role": role,
                 "content": content,
                 "tool_calls": tool_calls,
+                "trace_id": trace_id,
             },
         )
 
@@ -557,9 +600,7 @@ class WebSocketTestEventListener:
             },
         )
 
-    async def on_test_passed(
-        self, test_name: str, duration_ms: float, details: Any = None
-    ) -> None:
+    async def on_test_passed(self, test_name: str, duration_ms: float, details: Any = None) -> None:
         await self._send(
             "test_passed",
             {
