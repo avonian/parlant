@@ -25,6 +25,7 @@ from parlant.core.app_modules.tags import TagModule
 from parlant.core.app_modules.customers import CustomerModule
 from parlant.core.app_modules.guidelines import GuidelineModule
 from parlant.core.app_modules.glossary import GlossaryModule
+from parlant.core.app_modules.test_suites import TestSuiteModule
 
 
 class Application:
@@ -43,6 +44,7 @@ class Application:
         evaluation_module: EvaluationModule,
         capability_module: CapabilityModule,
         canned_response_module: CannedResponseModule,
+        test_suite_module: TestSuiteModule,
     ) -> None:
         self.agents = agent_module
         self.sessions = session_module
@@ -57,3 +59,4 @@ class Application:
         self.glossary = glossary_module
         self.evaluations = evaluation_module
         self.canned_responses = canned_response_module
+        self.test_suites = test_suite_module

@@ -125,6 +125,21 @@ class Operation(Enum):
     UPDATE_TAG = "update_tag"
     DELETE_TAG = "delete_tag"
 
+    CREATE_TEST_SUITE = "create_test_suite"
+    READ_TEST_SUITE = "read_test_suite"
+    UPDATE_TEST_SUITE = "update_test_suite"
+    DELETE_TEST_SUITE = "delete_test_suite"
+
+    CREATE_TEST_SCENARIO = "create_test_scenario"
+    READ_TEST_SCENARIO = "read_test_scenario"
+    UPDATE_TEST_SCENARIO = "update_test_scenario"
+    DELETE_TEST_SCENARIO = "delete_test_scenario"
+
+    CREATE_TEST_RUN = "create_test_run"
+    READ_TEST_RUN = "read_test_run"
+    DELETE_TEST_RUN = "delete_test_run"
+    DELETE_TEST_RUNS = "delete_test_runs"
+
 
 class AuthorizationException(Exception):
     def __init__(
