@@ -17,6 +17,7 @@
 Provides the application-level interface for test suite management and execution.
 """
 
+import re
 import time
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any, Optional, Protocol, Sequence
@@ -43,7 +44,7 @@ from parlant.core.test_suites import (
 )
 
 if TYPE_CHECKING:
-    from parlant.testing.runner import TestEventListener
+    pass
 
 
 # Define a minimal protocol for TestEventListener to avoid circular imports
@@ -463,6 +464,25 @@ class TestSuiteModule:
                                     )
 
                                     duration_ms = (time.time() - start_time) * 1000
+                                    error_str = str(e)
+
+                                    # Parse score and reasoning from error string
+                                    score_val = 0.0
+                                    reasoning = error_str
+
+                                    score_match = re.search(r"\(score:\s*([\d.]+)/100\)", error_str)
+                                    if score_match:
+                                        score_val = float(score_match.group(1))
+
+                                    # Extract reasoning (text after the condition percentage)
+                                    reasoning_match = re.search(
+                                        r"Failed conditions:\s*-\s*'[^']+'\s*\(\d+%\):\s*(.+)$",
+                                        error_str,
+                                        re.DOTALL,
+                                    )
+                                    if reasoning_match:
+                                        reasoning = reasoning_match.group(1).strip()
+
                                     step_results.append(
                                         TestStepResult(
                                             step_index=idx + 1,
@@ -471,15 +491,21 @@ class TestSuiteModule:
                                             actual_response=actual_response,
                                             assertion=next_step.should,
                                             assertion_passed=False,
-                                            assertion_reasoning=str(e),
+                                            assertion_reasoning=reasoning,
+                                            assertion_score=score_val,
                                         )
                                     )
 
                                     await listener.on_test_failed(
                                         test_name,
                                         duration_ms,
-                                        str(e),
-                                        {"actual": actual_response, "expected": next_step.should},
+                                        error_str,
+                                        {
+                                            "actual": actual_response,
+                                            "expected": next_step.should,
+                                            "reasoning": reasoning,
+                                            "score": score_val,
+                                        },
                                     )
 
                                     return TestScenarioResult(
