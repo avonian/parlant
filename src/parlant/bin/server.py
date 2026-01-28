@@ -174,6 +174,7 @@ from parlant.api.app import create_api_app, ASGIApplication
 from parlant.core.background_tasks import BackgroundTaskService
 from parlant.core.tracer import LocalTracer, Tracer
 from parlant.core.agents import AgentDocumentStore, AgentStore
+from parlant.core.playbooks import PlaybookDocumentStore, PlaybookStore
 from parlant.core.context_variables import ContextVariableDocumentStore, ContextVariableStore
 from parlant.core.emission.event_publisher import EventPublisherFactory
 from parlant.core.emissions import EventEmitterFactory
@@ -240,6 +241,13 @@ from parlant.core.engines.types import Engine
 from parlant.core.services.indexing.behavioral_change_evaluation import BehavioralChangeEvaluator
 from parlant.core.loggers import CompositeLogger, FileLogger, LogLevel, Logger
 from parlant.core.application import Application
+from parlant.core.test_suites import (
+    TestSuiteStore,
+    TestSuiteDocumentStore,
+    TestRunStore,
+    TestRunDocumentStore,
+)
+from parlant.core.app_modules.test_suites import TestSuiteModule
 from parlant.core.version import VERSION
 
 
@@ -645,6 +653,7 @@ async def setup_container() -> AsyncIterator[Container]:
 
     _define_singleton(c, Engine, AlphaEngine)
 
+    _define_singleton(c, TestSuiteModule, TestSuiteModule)
     _define_singleton(c, Application, Application)
 
     yield c
@@ -761,6 +770,7 @@ async def initialize_container(
     try:
         for interface, implementation, filename in [
             (AgentStore, AgentDocumentStore, "agents.json"),
+            (PlaybookStore, PlaybookDocumentStore, "playbooks.json"),
             (ContextVariableStore, ContextVariableDocumentStore, "context_variables.json"),
             (CustomerStore, CustomerDocumentStore, "customers.json"),
             (EvaluationStore, EvaluationDocumentStore, "evaluations.json"),
@@ -773,6 +783,8 @@ async def initialize_container(
             ),
             (RelationshipStore, RelationshipDocumentStore, "relationships.json"),
             (SessionStore, SessionDocumentStore, "sessions.json"),
+            (TestSuiteStore, TestSuiteDocumentStore, "test_suites.json"),
+            (TestRunStore, TestRunDocumentStore, "test_runs.json"),
         ]:
             await try_define_document_store(interface, implementation, filename)
 

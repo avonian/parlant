@@ -34,6 +34,7 @@ from parlant.adapters.loggers.websocket import WebSocketLogger
 from parlant.api import agents, capabilities
 from parlant.api import evaluations
 from parlant.api import journeys
+from parlant.api import playbooks
 from parlant.api import relationships
 from parlant.api import sessions
 from parlant.api import glossary
@@ -44,6 +45,7 @@ from parlant.api import tags
 from parlant.api import customers
 from parlant.api import logs
 from parlant.api import canned_responses
+from parlant.api import test_suites
 from parlant.api.authorization import (
     AuthorizationException,
     AuthorizationPolicy,
@@ -372,6 +374,22 @@ async def create_api_app(
     api_app.include_router(
         prefix="/capabilities",
         router=capabilities.create_router(
+            authorization_policy=authorization_policy,
+            app=application,
+        ),
+    )
+
+    api_app.include_router(
+        prefix="/test-suites",
+        router=test_suites.create_router(
+            authorization_policy=authorization_policy,
+            app=application,
+        ),
+    )
+
+    api_app.include_router(
+        prefix="/playbooks",
+        router=playbooks.create_router(
             authorization_policy=authorization_policy,
             app=application,
         ),
