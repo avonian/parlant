@@ -221,6 +221,11 @@ from parlant.core.guideline_tool_associations import (
     GuidelineToolAssociationDocumentStore,
     GuidelineToolAssociationStore,
 )
+from parlant.core.agent_tool_associations import (
+    AgentToolAssociationDocumentStore,
+    AgentToolAssociationStore,
+)
+from parlant.core.engines.alpha.simple_agent import register_simple_agent_hook
 from parlant.core.engines.alpha.tool_calling import single_tool_batch
 from parlant.core.engines.alpha.tool_calling.default_tool_call_batcher import DefaultToolCallBatcher
 from parlant.core.engines.alpha.tool_calling.single_tool_batch import (
@@ -781,6 +786,11 @@ async def initialize_container(
                 GuidelineToolAssociationDocumentStore,
                 "guideline_tool_associations.json",
             ),
+            (
+                AgentToolAssociationStore,
+                AgentToolAssociationDocumentStore,
+                "agent_tool_associations.json",
+            ),
             (RelationshipStore, RelationshipDocumentStore, "relationships.json"),
             (SessionStore, SessionDocumentStore, "sessions.json"),
             (TestSuiteStore, TestSuiteDocumentStore, "test_suites.json"),
@@ -850,6 +860,15 @@ async def initialize_container(
                 get_embedder_type,
                 embedder_factory,
             )
+
+        # Register simple agent hook for agents tagged with "simple-agent"
+        register_simple_agent_hook(
+            hooks=c[EngineHooks],
+            service_registry=c[ServiceRegistry],
+            association_store=c[AgentToolAssociationStore],
+            tag_store=c[TagStore],
+            logger=c[Logger],
+        )
 
     except MigrationRequired as e:
         c[Logger].critical(str(e))
