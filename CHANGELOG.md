@@ -4,7 +4,8 @@ All notable changes to Parlant will be documented here.
 
 ## [Unreleased]
 
-TBD
+- Add testing framework
+- Add option to override fluid preamble response examples
 
 ## [3.1.2] - 2026-01-05
 
