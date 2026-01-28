@@ -140,6 +140,12 @@ class Operation(Enum):
     DELETE_TEST_RUN = "delete_test_run"
     DELETE_TEST_RUNS = "delete_test_runs"
 
+    CREATE_PLAYBOOK = "create_playbook"
+    READ_PLAYBOOK = "read_playbook"
+    LIST_PLAYBOOKS = "list_playbooks"
+    UPDATE_PLAYBOOK = "update_playbook"
+    DELETE_PLAYBOOK = "delete_playbook"
+
 
 class AuthorizationException(Exception):
     def __init__(
