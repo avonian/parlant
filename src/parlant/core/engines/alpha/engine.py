@@ -408,6 +408,11 @@ class AlphaEngine(Engine):
         session = await self._entity_queries.read_session(context.session_id)
         customer = await self._entity_queries.read_customer(session.customer_id)
 
+        # Resolve effective model name (agent -> playbook chain -> global default)
+        effective_model_name = await self._entity_queries.resolve_effective_model_name(
+            context.agent_id
+        )
+
         if load_interaction:
             interaction = await self._load_interaction_state(context)
         else:
@@ -441,6 +446,7 @@ class AlphaEngine(Engine):
                 prepared_to_respond=False,
                 message_events=[],
             ),
+            effective_model_name=effective_model_name,
         )
 
         # Set in context for access by hooks and other components

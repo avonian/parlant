@@ -590,3 +590,32 @@ async def test_that_canned_responses_can_be_found_for_a_guideline(
     assert any(canrep_4.id == r.id for r in results)
 
     assert all(canrep_3.id != r.id for r in results)
+
+
+async def test_that_agent_model_name_is_returned_when_set(
+    container: Container,
+) -> None:
+    """Agent's model_name should be returned when set."""
+    entity_queries = container[EntityQueries]
+    agent_store = container[AgentStore]
+
+    agent = await agent_store.create_agent(
+        name="Test Agent",
+        model_name="gpt-4o",
+    )
+
+    result = await entity_queries.resolve_effective_model_name(agent.id)
+
+    assert result == "gpt-4o"
+
+
+async def test_that_none_returned_when_agent_has_no_model_name(
+    container: Container,
+    agent: Agent,
+) -> None:
+    """None should be returned when agent has no model_name configured."""
+    entity_queries = container[EntityQueries]
+
+    result = await entity_queries.resolve_effective_model_name(agent.id)
+
+    assert result is None

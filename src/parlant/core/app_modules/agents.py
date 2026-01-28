@@ -50,6 +50,7 @@ class AgentModule:
         tags: list[TagId] | None,
         id: AgentId | None = None,
         playbook_id: PlaybookId | None = None,
+        model_name: str | None = None,
     ) -> Agent:
         if tags:
             for tag_id in tags:
@@ -68,6 +69,7 @@ class AgentModule:
             tags=tags,
             id=id,
             playbook_id=playbook_id,
+            model_name=model_name,
         )
         return agent
 
@@ -89,6 +91,7 @@ class AgentModule:
         tags: AgentTagUpdateParamsModel | None,
         playbook_id: PlaybookId | None | Any = _NOT_PROVIDED,
         disabled_rules: AgentDisabledRulesUpdateParamsModel | None = None,
+        model_name: str | None | Any = _NOT_PROVIDED,
     ) -> Agent:
         update_params: AgentUpdateParams = {}
 
@@ -108,6 +111,9 @@ class AgentModule:
             if playbook_id:
                 await self._ensure_playbook(playbook_id)
             update_params["playbook_id"] = playbook_id
+
+        if model_name is not _NOT_PROVIDED:
+            update_params["model_name"] = model_name
 
         await self._agent_store.update_agent(agent_id=agent_id, params=update_params)
 

@@ -146,6 +146,7 @@ class DefaultToolCallBatcher(ToolCallBatcher):
                 journeys=context.journeys,
                 tool_enabled_guideline_matches={},
                 staged_events=context.staged_events,
+                effective_model_name=context.effective_model_name,
             )
             result.extend(
                 self._create_single_tool_batch(

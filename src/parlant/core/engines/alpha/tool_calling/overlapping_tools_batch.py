@@ -718,7 +718,7 @@ Guidelines:
     ) -> tuple[GenerationInfo, Sequence[OverlappingToolsBatchToolEvaluation]]:
         inference = await self._schematic_generator.generate(
             prompt=prompt,
-            hints={"temperature": temperature},
+            hints={"temperature": temperature, "model_name": self._context.effective_model_name},
         )
 
         self._logger.trace(f"Inference::Completion:\n{inference.content.model_dump_json(indent=2)}")

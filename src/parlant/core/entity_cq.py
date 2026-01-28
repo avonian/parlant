@@ -137,6 +137,17 @@ class EntityQueries:
 
         return playbook_chain
 
+    async def resolve_effective_model_name(
+        self,
+        agent_id: AgentId,
+    ) -> Optional[str]:
+        """Returns the effective model_name for an agent.
+
+        Returns agent.model_name if set, otherwise None (use global default).
+        """
+        agent = await self._agent_store.read_agent(agent_id)
+        return agent.model_name
+
     async def _get_playbook_tags(self, playbook_chain: list[Playbook]) -> list[TagId]:
         """Returns list of actual tag IDs for the playbook chain.
 

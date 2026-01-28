@@ -182,6 +182,7 @@ class ToolCallContext:
     tool_enabled_guideline_matches: Mapping[GuidelineMatch, Sequence[ToolId]]
     journeys: Sequence[Journey]
     staged_events: Sequence[EmittedEvent]
+    effective_model_name: Optional[str] = None
 
 
 @dataclass(frozen=True)
