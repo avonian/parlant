@@ -855,6 +855,7 @@ async def initialize_container(
             service_registry=c[ServiceRegistry],
             association_store=c[AgentToolAssociationStore],
             tag_store=c[TagStore],
+            variable_store=c[ContextVariableStore],
             logger=c[Logger],
         )
 

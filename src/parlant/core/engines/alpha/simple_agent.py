@@ -36,6 +36,7 @@ from typing import Any, Mapping, Optional, cast
 import litellm  # type: ignore[import-not-found]
 
 from parlant.core.agents import Agent, AgentId
+from parlant.core.context_variables import ContextVariable, ContextVariableStore, ContextVariableValue
 from parlant.core.engines.alpha.engine_context import EngineContext
 from parlant.core.engines.alpha.hooks import EngineHooks, EngineHookResult
 from parlant.core.loggers import Logger
@@ -205,6 +206,7 @@ class SimpleAgentHook:
         service_registry: ServiceRegistry,
         association_store: AgentToolAssociationStore,
         tag_store: TagStore,
+        variable_store: ContextVariableStore,
         logger: Logger,
         model: str,
         base_url: Optional[str] = None,
@@ -213,6 +215,7 @@ class SimpleAgentHook:
         self._service_registry = service_registry
         self._association_store = association_store
         self._tag_store = tag_store
+        self._variable_store = variable_store
         self._logger = logger
         self._model = model
         self._base_url = base_url
@@ -359,6 +362,58 @@ class SimpleAgentHook:
         self._logger.warning("SimpleAgent: Max iterations reached")
         return "I apologize, but I was unable to complete the request within the allowed number of steps."
 
+    async def _load_context_variables(
+        self,
+        context: EngineContext,
+    ) -> list[tuple[ContextVariable, ContextVariableValue]]:
+        """Load context variable values for the customer in this session."""
+        result: list[tuple[ContextVariable, ContextVariableValue]] = []
+
+        try:
+            variables = await self._variable_store.list_variables()
+
+            keys_to_check = (
+                [context.customer.id]
+                + [f"tag:{tag_id}" for tag_id in context.customer.tags]
+                + [ContextVariableStore.GLOBAL_KEY]
+            )
+
+            for variable in variables:
+                for key in keys_to_check:
+                    value = await self._variable_store.read_value(
+                        variable_id=variable.id,
+                        key=key,
+                    )
+                    if value is not None:
+                        result.append((variable, value))
+                        break
+        except Exception as e:
+            self._logger.warning(f"SimpleAgent: Failed to load context variables: {e}")
+
+        return result
+
+    def _format_context_variables(
+        self,
+        variables: list[tuple[ContextVariable, ContextVariableValue]],
+    ) -> str:
+        """Format context variables as a text block for the system prompt."""
+        if not variables:
+            return ""
+
+        lines = [
+            "\nThe following is contextual information relevant to this conversation:"
+        ]
+        for variable, value in variables:
+            name = variable.name
+            data = value.data
+            if isinstance(data, dict):
+                formatted = json.dumps(data)
+            else:
+                formatted = str(data)
+            lines.append(f"- {name}: {formatted}")
+
+        return "\n".join(lines)
+
     async def on_acknowledged(
         self,
         context: EngineContext,
@@ -374,6 +429,12 @@ class SimpleAgentHook:
 
         # Get system prompt from agent description
         system_prompt = context.agent.description or "You are a helpful assistant."
+
+        # Load and append context variables to the system prompt
+        context_variables = await self._load_context_variables(context)
+        context_section = self._format_context_variables(context_variables)
+        if context_section:
+            system_prompt = system_prompt + "\n" + context_section
 
         # Gather tools associated with this agent
         tools = await gather_agent_tools(
@@ -419,6 +480,7 @@ def register_simple_agent_hook(
     service_registry: ServiceRegistry,
     association_store: AgentToolAssociationStore,
     tag_store: TagStore,
+    variable_store: ContextVariableStore,
     logger: Logger,
     max_iterations: Optional[int] = None,
 ) -> Optional[SimpleAgentHook]:
@@ -434,6 +496,7 @@ def register_simple_agent_hook(
         service_registry: The service registry for accessing tools.
         association_store: The store for agent-tool associations.
         tag_store: The tag store for looking up tag names.
+        variable_store: The context variable store for loading variable values.
         logger: Logger instance for logging messages.
         max_iterations: Optional max tool-calling iterations (defaults to 10).
 
@@ -456,6 +519,7 @@ def register_simple_agent_hook(
         service_registry=service_registry,
         association_store=association_store,
         tag_store=tag_store,
+        variable_store=variable_store,
         logger=logger,
         model=model,
         base_url=base_url,
