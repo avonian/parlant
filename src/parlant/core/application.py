@@ -18,6 +18,7 @@ from parlant.core.app_modules.canned_responses import CannedResponseModule
 from parlant.core.app_modules.context_variables import ContextVariableModule
 from parlant.core.app_modules.evaluations import EvaluationModule
 from parlant.core.app_modules.journeys import JourneyModule
+from parlant.core.app_modules.playbooks import PlaybookModule
 from parlant.core.app_modules.relationships import RelationshipModule
 from parlant.core.app_modules.services import ServiceModule
 from parlant.core.app_modules.sessions import SessionModule
@@ -25,6 +26,7 @@ from parlant.core.app_modules.tags import TagModule
 from parlant.core.app_modules.customers import CustomerModule
 from parlant.core.app_modules.guidelines import GuidelineModule
 from parlant.core.app_modules.glossary import GlossaryModule
+from parlant.core.app_modules.test_suites import TestSuiteModule
 
 
 class Application:
@@ -43,6 +45,8 @@ class Application:
         evaluation_module: EvaluationModule,
         capability_module: CapabilityModule,
         canned_response_module: CannedResponseModule,
+        test_suite_module: TestSuiteModule,
+        playbook_module: PlaybookModule,
     ) -> None:
         self.agents = agent_module
         self.sessions = session_module
@@ -57,3 +61,5 @@ class Application:
         self.glossary = glossary_module
         self.evaluations = evaluation_module
         self.canned_responses = canned_response_module
+        self.test_suites = test_suite_module
+        self.playbooks = playbook_module

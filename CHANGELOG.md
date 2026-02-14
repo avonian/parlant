@@ -38,6 +38,18 @@ All notable changes to Parlant will be documented here.
 - Fix multiple customer guideline matchers not working
 - Fix bug with context variable access in SDK
 
+## [3.1.2] - 2026-01-05
+
+### Changed
+
+- Set EmcieService back as default NLPService
+
+## [3.1.1] - 2026-01-05
+
+### Changed
+
+- Set OpenAI as default service until EmcieService is live
+
 ## [3.1.0] - 2026-01-05
 
 ### Added

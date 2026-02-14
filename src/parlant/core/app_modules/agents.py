@@ -1,5 +1,5 @@
 from dataclasses import dataclass
-from typing import Sequence
+from typing import Any, Sequence
 
 from parlant.core.loggers import Logger
 from parlant.core.agents import (
@@ -10,7 +10,11 @@ from parlant.core.agents import (
     CompositionMode,
     MessageOutputMode,
 )
+from parlant.core.playbooks import PlaybookId, PlaybookStore, DisabledRuleRef
 from parlant.core.tags import TagId, TagStore
+
+# Sentinel value to indicate "not provided" (distinct from None which means "clear")
+_NOT_PROVIDED: Any = object()
 
 
 @dataclass(frozen=True)
@@ -19,19 +23,30 @@ class AgentTagUpdateParamsModel:
     remove: list[TagId] | None = None
 
 
+@dataclass(frozen=True)
+class AgentDisabledRulesUpdateParamsModel:
+    add: list[DisabledRuleRef] | None = None
+    remove: list[DisabledRuleRef] | None = None
+
+
 class AgentModule:
     def __init__(
         self,
         logger: Logger,
         agent_store: AgentStore,
         tag_store: TagStore,
+        playbook_store: PlaybookStore,
     ):
         self._logger = logger
         self._agent_store = agent_store
         self._tag_store = tag_store
+        self._playbook_store = playbook_store
 
     async def _ensure_tag(self, tag_id: TagId) -> None:
         await self._tag_store.read_tag(tag_id)
+
+    async def _ensure_playbook(self, playbook_id: PlaybookId) -> None:
+        await self._playbook_store.read_playbook(playbook_id)
 
     async def create(
         self,
@@ -42,12 +57,17 @@ class AgentModule:
         message_output_mode: MessageOutputMode | None,
         tags: list[TagId] | None,
         id: AgentId | None = None,
+        playbook_id: PlaybookId | None = None,
+        model_name: str | None = None,
     ) -> Agent:
         if tags:
             for tag_id in tags:
                 await self._ensure_tag(tag_id)
 
             tags = list(set(tags))
+
+        if playbook_id:
+            await self._ensure_playbook(playbook_id)
 
         agent = await self._agent_store.create_agent(
             name=name,
@@ -57,6 +77,8 @@ class AgentModule:
             message_output_mode=message_output_mode,
             tags=tags,
             id=id,
+            playbook_id=playbook_id,
+            model_name=model_name,
         )
         return agent
 
@@ -77,6 +99,9 @@ class AgentModule:
         composition_mode: CompositionMode | None,
         message_output_mode: MessageOutputMode | None,
         tags: AgentTagUpdateParamsModel | None,
+        playbook_id: PlaybookId | None | Any = _NOT_PROVIDED,
+        disabled_rules: AgentDisabledRulesUpdateParamsModel | None = None,
+        model_name: str | None | Any = _NOT_PROVIDED,
     ) -> Agent:
         update_params: AgentUpdateParams = {}
 
@@ -95,6 +120,14 @@ class AgentModule:
         if message_output_mode:
             update_params["message_output_mode"] = message_output_mode
 
+        if playbook_id is not _NOT_PROVIDED:
+            if playbook_id:
+                await self._ensure_playbook(playbook_id)
+            update_params["playbook_id"] = playbook_id
+
+        if model_name is not _NOT_PROVIDED:
+            update_params["model_name"] = model_name
+
         await self._agent_store.update_agent(agent_id=agent_id, params=update_params)
 
         if tags:
@@ -112,6 +145,21 @@ class AgentModule:
                     await self._agent_store.remove_tag(
                         agent_id=agent_id,
                         tag_id=tag_id,
+                    )
+
+        if disabled_rules:
+            if disabled_rules.add:
+                for rule_ref in disabled_rules.add:
+                    await self._agent_store.add_disabled_rule(
+                        agent_id=agent_id,
+                        rule_ref=rule_ref,
+                    )
+
+            if disabled_rules.remove:
+                for rule_ref in disabled_rules.remove:
+                    await self._agent_store.remove_disabled_rule(
+                        agent_id=agent_id,
+                        rule_ref=rule_ref,
                     )
 
         agent = await self._agent_store.read_agent(agent_id)

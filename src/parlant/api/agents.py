@@ -28,10 +28,14 @@ from parlant.api.common import (
     message_output_mode_dto_to_message_output_mode,
     message_output_mode_to_message_output_mode_dto,
 )
-from parlant.core.app_modules.agents import AgentTagUpdateParamsModel
+from parlant.core.app_modules.agents import (
+    AgentTagUpdateParamsModel,
+    AgentDisabledRulesUpdateParamsModel,
+)
 from parlant.core.agents import AgentId
 from parlant.core.application import Application
 from parlant.core.common import DefaultBaseModel
+from parlant.core.playbooks import PlaybookId, DisabledRuleRef
 from parlant.core.tags import TagId
 
 API_GROUP = "agents"
@@ -95,6 +99,31 @@ AgentTagUpdateRemoveField: TypeAlias = Annotated[
         examples=[["tag1", "tag2"]],
     ),
 ]
+
+AgentPlaybookIdField: TypeAlias = Annotated[
+    str,
+    Field(
+        description="ID of the playbook assigned to the agent",
+        examples=["pb_abc123"],
+    ),
+]
+
+AgentDisabledRulesField: TypeAlias = Annotated[
+    list[str],
+    Field(
+        description="List of disabled rule references (e.g., guideline:abc123)",
+        examples=[["guideline:abc123", "term:xyz789"]],
+    ),
+]
+
+AgentModelNameField: TypeAlias = Annotated[
+    str,
+    Field(
+        description="LLM model name to use for this agent (e.g., 'gpt-4o', 'claude-3-opus'). If not set, inherits from playbook or uses global default.",
+        examples=["gpt-4o", "claude-3-opus", "anthropic/claude-3-sonnet"],
+    ),
+]
+
 agent_example: ExampleJson = {
     "id": "IUCGT-lvpS",
     "name": "Haxon",
@@ -104,6 +133,9 @@ agent_example: ExampleJson = {
     "composition_mode": "fluid",
     "message_output_mode": "block",
     "tags": ["tag1", "tag2"],
+    "disabled_rules": [],
+    "playbook_id": "pb_abc123",
+    "model_name": "gpt-4o",
 }
 
 
@@ -127,6 +159,9 @@ class AgentDTO(
     composition_mode: CompositionModeDTO
     message_output_mode: MessageOutputModeDTO
     tags: AgentTagsField = []
+    disabled_rules: AgentDisabledRulesField = []
+    playbook_id: AgentPlaybookIdField | None = None
+    model_name: AgentModelNameField | None = None
 
 
 agent_creation_params_example: ExampleJson = {
@@ -136,6 +171,8 @@ agent_creation_params_example: ExampleJson = {
     "composition_mode": "fluid",
     "message_output_mode": "block",
     "tags": ["tag1", "tag2"],
+    "playbook_id": "pb_abc123",
+    "model_name": "gpt-4o",
 }
 
 
@@ -155,6 +192,7 @@ class AgentCreationParamsDTO(
     - `composition_mode`: How the agent composes responses
     - `message_output_mode`: How the agent outputs messages (block or streaming)
     - `tags`: List of tag IDs to associate with the agent
+    - `playbook_id`: ID of the playbook to assign to the agent
 
     Note: Agents must be created via the API before they can be used.
     """
@@ -166,6 +204,8 @@ class AgentCreationParamsDTO(
     composition_mode: CompositionModeDTO | None = None
     message_output_mode: MessageOutputModeDTO | None = None
     tags: AgentTagsField | None = None
+    playbook_id: AgentPlaybookIdField | None = None
+    model_name: AgentModelNameField | None = None
 
 
 agent_update_params_example: ExampleJson = {
@@ -174,6 +214,8 @@ agent_update_params_example: ExampleJson = {
     "max_engine_iterations": 3,
     "composition_mode": "fluid",
     "message_output_mode": "block",
+    "playbook_id": "pb_abc123",
+    "model_name": "gpt-4o",
 }
 
 
@@ -201,6 +243,24 @@ class AgentTagUpdateParamsDTO(
     remove: AgentTagUpdateRemoveField | None = None
 
 
+disabled_rules_update_params_example: ExampleJson = {
+    "add": ["guideline:abc123", "term:xyz789"],
+    "remove": ["guideline:old123"],
+}
+
+
+class AgentDisabledRulesUpdateParamsDTO(
+    DefaultBaseModel,
+    json_schema_extra={"example": disabled_rules_update_params_example},
+):
+    """
+    Parameters for updating an existing agent's disabled rules.
+    """
+
+    add: list[str] | None = None
+    remove: list[str] | None = None
+
+
 class AgentUpdateParamsDTO(
     DefaultBaseModel,
     json_schema_extra={"example": agent_update_params_example},
@@ -218,6 +278,8 @@ class AgentUpdateParamsDTO(
     composition_mode: CompositionModeDTO | None = None
     message_output_mode: MessageOutputModeDTO | None = None
     tags: AgentTagUpdateParamsDTO | None = None
+    playbook_id: AgentPlaybookIdField | None = None
+    model_name: AgentModelNameField | None = None
 
 
 def create_router(
@@ -277,6 +339,8 @@ def create_router(
             else None,
             tags=params.tags,
             id=params.id if params else None,
+            playbook_id=PlaybookId(params.playbook_id) if params and params.playbook_id else None,
+            model_name=params.model_name if params else None,
         )
 
         return AgentDTO(
@@ -289,7 +353,10 @@ def create_router(
             message_output_mode=message_output_mode_to_message_output_mode_dto(
                 agent.message_output_mode
             ),
-            tags=agent.tags,
+            tags=list(agent.tags),
+            disabled_rules=list(agent.disabled_rules),
+            playbook_id=agent.playbook_id,
+            model_name=agent.model_name,
         )
 
     @router.get(
@@ -329,7 +396,10 @@ def create_router(
                 message_output_mode=message_output_mode_to_message_output_mode_dto(
                     a.message_output_mode
                 ),
-                tags=a.tags,
+                tags=list(a.tags),
+                disabled_rules=list(a.disabled_rules),
+                playbook_id=a.playbook_id,
+                model_name=a.model_name,
             )
             for a in agents
         ]
@@ -378,7 +448,10 @@ def create_router(
             message_output_mode=message_output_mode_to_message_output_mode_dto(
                 agent.message_output_mode
             ),
-            tags=agent.tags,
+            tags=list(agent.tags),
+            disabled_rules=list(agent.disabled_rules),
+            playbook_id=agent.playbook_id,
+            model_name=agent.model_name,
         )
 
     @router.patch(
@@ -415,22 +488,92 @@ def create_router(
             operation=Operation.UPDATE_AGENT,
         )
 
-        agent = await app.agents.update(
-            agent_id=agent_id,
-            name=params.name,
-            description=params.description,
-            max_engine_iterations=params.max_engine_iterations,
-            composition_mode=composition_mode_dto_to_composition_mode(params.composition_mode)
+        update_kwargs: dict[str, object] = {
+            "agent_id": agent_id,
+            "name": params.name,
+            "description": params.description,
+            "max_engine_iterations": params.max_engine_iterations,
+            "composition_mode": composition_mode_dto_to_composition_mode(params.composition_mode)
             if params.composition_mode
             else None,
-            message_output_mode=message_output_mode_dto_to_message_output_mode(
+            "message_output_mode": message_output_mode_dto_to_message_output_mode(
                 params.message_output_mode
             )
             if params.message_output_mode
             else None,
-            tags=AgentTagUpdateParamsModel(add=params.tags.add, remove=params.tags.remove)
+            "tags": AgentTagUpdateParamsModel(add=params.tags.add, remove=params.tags.remove)
             if params.tags
             else None,
+        }
+
+        # Only pass playbook_id if it was explicitly set (even if to None/null)
+        if "playbook_id" in params.model_fields_set:
+            update_kwargs["playbook_id"] = (
+                PlaybookId(params.playbook_id) if params.playbook_id else None
+            )
+
+        # Only pass model_name if it was explicitly set (even if to None/null)
+        if "model_name" in params.model_fields_set:
+            update_kwargs["model_name"] = params.model_name
+
+        agent = await app.agents.update(**update_kwargs)  # type: ignore[arg-type]
+
+        return AgentDTO(
+            id=agent.id,
+            name=agent.name,
+            description=agent.description,
+            creation_utc=agent.creation_utc,
+            max_engine_iterations=agent.max_engine_iterations,
+            composition_mode=composition_mode_to_composition_mode_dto(agent.composition_mode),
+            message_output_mode=message_output_mode_to_message_output_mode_dto(
+                agent.message_output_mode
+            ),
+            tags=list(agent.tags),
+            disabled_rules=list(agent.disabled_rules),
+            playbook_id=agent.playbook_id,
+            model_name=agent.model_name,
+        )
+
+    @router.patch(
+        "/{agent_id}/disabled-rules",
+        operation_id="update_agent_disabled_rules",
+        response_model=AgentDTO,
+        responses={
+            status.HTTP_200_OK: {
+                "description": "Agent disabled rules successfully updated.",
+                "content": example_json_content(agent_example),
+            },
+            status.HTTP_404_NOT_FOUND: {"description": "Agent not found"},
+        },
+        **apigen_config(group_name=API_GROUP, method_name="update_disabled_rules"),
+    )
+    async def update_agent_disabled_rules(
+        request: Request,
+        agent_id: AgentIdPath,
+        params: AgentDisabledRulesUpdateParamsDTO,
+    ) -> AgentDTO:
+        """
+        Updates an agent's disabled rules.
+
+        Disabled rules allow an agent to override specific inherited rules
+        from its playbook chain.
+        """
+        await policy.authorize(
+            request=request,
+            operation=Operation.UPDATE_AGENT,
+        )
+
+        agent = await app.agents.update(
+            agent_id=agent_id,
+            name=None,
+            description=None,
+            max_engine_iterations=None,
+            composition_mode=None,
+            tags=None,
+            disabled_rules=AgentDisabledRulesUpdateParamsModel(
+                add=[DisabledRuleRef(r) for r in params.add] if params.add else None,
+                remove=[DisabledRuleRef(r) for r in params.remove] if params.remove else None,
+            ),
         )
 
         return AgentDTO(
@@ -443,7 +586,10 @@ def create_router(
             message_output_mode=message_output_mode_to_message_output_mode_dto(
                 agent.message_output_mode
             ),
-            tags=agent.tags,
+            tags=list(agent.tags),
+            disabled_rules=list(agent.disabled_rules),
+            playbook_id=agent.playbook_id,
+            model_name=agent.model_name,
         )
 
     @router.delete(

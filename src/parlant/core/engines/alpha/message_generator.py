@@ -189,6 +189,7 @@ class MessageGenerator(MessageEventComposer):
                             staged_tool_events=context.state.tool_events,
                             staged_message_events=context.state.message_events,
                             latch=latch,
+                            effective_model_name=context.effective_model_name,
                         )
 
     def _format_staged_events(
@@ -223,6 +224,7 @@ class MessageGenerator(MessageEventComposer):
         staged_tool_events: Sequence[EmittedEvent],
         staged_message_events: Sequence[EmittedEvent],
         latch: Optional[CancellationSuppressionLatch[None]] = None,
+        effective_model_name: Optional[str] = None,
     ) -> Sequence[MessageEventComposition]:
         if (
             not interaction_history
@@ -270,6 +272,7 @@ class MessageGenerator(MessageEventComposer):
                     prompt,
                     temperature=generation_attempt_temperatures[generation_attempt],
                     final_attempt=(generation_attempt + 1) == len(generation_attempt_temperatures),
+                    effective_model_name=effective_model_name,
                 )
 
                 if latch:
@@ -729,10 +732,11 @@ Produce a valid JSON object in the following format: ###
         prompt: PromptBuilder,
         temperature: float,
         final_attempt: bool,
+        effective_model_name: Optional[str] = None,
     ) -> tuple[GenerationInfo, Optional[str]]:
         message_event_response = await self._schematic_generator.generate(
             prompt=prompt,
-            hints={"temperature": temperature},
+            hints={"temperature": temperature, "model_name": effective_model_name},
         )
 
         self._logger.trace(

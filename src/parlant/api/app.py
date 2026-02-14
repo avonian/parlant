@@ -20,8 +20,8 @@ from typing import Any, Awaitable, Callable, Mapping, TypeAlias
 
 import mimetypes
 
-from fastapi import APIRouter, FastAPI, HTTPException, Request, Response, status
-from fastapi.responses import RedirectResponse
+from fastapi import APIRouter, FastAPI, Request, Response, status
+from fastapi.responses import JSONResponse, RedirectResponse
 from fastapi.routing import APIRoute
 from fastapi.staticfiles import StaticFiles
 from starlette.types import Receive, Scope, Send
@@ -32,8 +32,10 @@ from lagom import Container
 
 from parlant.adapters.loggers.websocket import WebSocketLogger
 from parlant.api import agents, capabilities
+from parlant.api import agent_tool_associations
 from parlant.api import evaluations
 from parlant.api import journeys
+from parlant.api import playbooks
 from parlant.api import relationships
 from parlant.api import sessions
 from parlant.api import glossary
@@ -44,6 +46,7 @@ from parlant.api import tags
 from parlant.api import customers
 from parlant.api import logs
 from parlant.api import canned_responses
+from parlant.api import test_suites
 from parlant.api.authorization import (
     AuthorizationException,
     AuthorizationPolicy,
@@ -55,6 +58,7 @@ from parlant.core.meter import Meter
 from parlant.core.tracer import Tracer
 from parlant.core.common import ItemNotFoundError, generate_id
 from parlant.core.loggers import Logger
+from parlant.core.agent_tool_associations import AgentToolAssociationStore
 from parlant.core.application import Application
 
 
@@ -113,6 +117,7 @@ async def create_api_app(
     tracer = container[Tracer]
     authorization_policy = container[AuthorizationPolicy]
     application = container[Application]
+    agent_tool_association_store = container[AgentToolAssociationStore]
 
     meter = container[Meter]
     _hist_http_request_duration = meter.create_duration_histogram(
@@ -194,47 +199,66 @@ async def create_api_app(
             ):
                 return await call_next(request)
 
+    def _cors_headers(request: Request) -> dict[str, str]:
+        """
+        Build CORS headers for error responses.
+
+        CORSMiddleware doesn't always add headers to exception handler responses,
+        so we add them explicitly to ensure cross-origin errors are readable.
+        """
+        origin = request.headers.get("origin")
+        if origin:
+            return {
+                "access-control-allow-origin": origin,
+                "access-control-allow-credentials": "true",
+            }
+        return {}
+
     @api_app.exception_handler(RateLimitExceededException)
     async def rate_limit_exceeded_handler(
         request: Request, exc: RateLimitExceededException
-    ) -> HTTPException:
+    ) -> JSONResponse:
         logger.trace(f"Rate limit exceeded: {exc}")
 
-        raise HTTPException(
+        return JSONResponse(
             status_code=status.HTTP_429_TOO_MANY_REQUESTS,
-            detail=str(exc),
+            content={"detail": str(exc)},
+            headers=_cors_headers(request),
         )
 
     @api_app.exception_handler(AuthorizationException)
     async def authorization_error_handler(
         request: Request, exc: AuthorizationException
-    ) -> HTTPException:
+    ) -> JSONResponse:
         logger.trace(f"Authorization error: {exc}")
 
-        raise HTTPException(
+        return JSONResponse(
             status_code=status.HTTP_403_FORBIDDEN,
-            detail=str(exc),
+            content={"detail": str(exc)},
+            headers=_cors_headers(request),
         )
 
     @api_app.exception_handler(ItemNotFoundError)
     async def item_not_found_error_handler(
         request: Request, exc: ItemNotFoundError
-    ) -> HTTPException:
+    ) -> JSONResponse:
         logger.info(str(exc))
 
-        raise HTTPException(
+        return JSONResponse(
             status_code=status.HTTP_404_NOT_FOUND,
-            detail=str(exc),
+            content={"detail": str(exc)},
+            headers=_cors_headers(request),
         )
 
     @api_app.exception_handler(Exception)
-    async def server_error_handler(request: Request, exc: ItemNotFoundError) -> HTTPException:
+    async def server_error_handler(request: Request, exc: Exception) -> JSONResponse:
         logger.error(str(exc))
         logger.error(str(traceback.format_exception(exc)))
 
-        raise HTTPException(
+        return JSONResponse(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=str(exc),
+            content={"detail": str(exc)},
+            headers=_cors_headers(request),
         )
 
     static_dir = os.path.join(os.path.dirname(__file__), "chat/dist")
@@ -260,6 +284,14 @@ async def create_api_app(
 
     api_app.include_router(
         router=agent_router,
+    )
+
+    api_app.include_router(
+        prefix="/agents",
+        router=agent_tool_associations.create_router(
+            authorization_policy=authorization_policy,
+            association_store=agent_tool_association_store,
+        ),
     )
 
     api_app.include_router(
@@ -353,6 +385,22 @@ async def create_api_app(
     api_app.include_router(
         prefix="/capabilities",
         router=capabilities.create_router(
+            authorization_policy=authorization_policy,
+            app=application,
+        ),
+    )
+
+    api_app.include_router(
+        prefix="/test-suites",
+        router=test_suites.create_router(
+            authorization_policy=authorization_policy,
+            app=application,
+        ),
+    )
+
+    api_app.include_router(
+        prefix="/playbooks",
+        router=playbooks.create_router(
             authorization_policy=authorization_policy,
             app=application,
         ),

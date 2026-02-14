@@ -214,13 +214,24 @@ from parlant.core.services.indexing.behavioral_change_evaluation import (
 from parlant.core.loggers import LogLevel, Logger, StdoutLogger
 from parlant.core.application import Application
 from parlant.core.agents import AgentDocumentStore, AgentStore
+from parlant.core.playbooks import PlaybookDocumentStore, PlaybookStore
 from parlant.core.guideline_tool_associations import (
     GuidelineToolAssociationDocumentStore,
     GuidelineToolAssociationStore,
 )
+from parlant.core.agent_tool_associations import (
+    AgentToolAssociationDocumentStore,
+    AgentToolAssociationStore,
+)
 from parlant.core.shots import ShotCollection
 from parlant.core.entity_cq import EntityQueries, EntityCommands
 from parlant.core.tags import TagDocumentStore, TagStore
+from parlant.core.test_suites import (
+    TestSuiteDocumentStore,
+    TestSuiteStore,
+    TestRunDocumentStore,
+    TestRunStore,
+)
 from parlant.core.tools import LocalToolService
 
 from .test_utilities import (
@@ -351,6 +362,9 @@ async def container(
         container[AgentStore] = await stack.enter_async_context(
             AgentDocumentStore(container[IdGenerator], TransientDocumentDatabase())
         )
+        container[PlaybookStore] = await stack.enter_async_context(
+            PlaybookDocumentStore(container[IdGenerator], TransientDocumentDatabase())
+        )
         container[GuidelineStore] = await stack.enter_async_context(
             GuidelineDocumentStore(container[IdGenerator], TransientDocumentDatabase())
         )
@@ -366,11 +380,22 @@ async def container(
         container[TagStore] = await stack.enter_async_context(
             TagDocumentStore(container[IdGenerator], TransientDocumentDatabase())
         )
+        container[TestSuiteStore] = await stack.enter_async_context(
+            TestSuiteDocumentStore(container[IdGenerator], TransientDocumentDatabase())
+        )
+        container[TestRunStore] = await stack.enter_async_context(
+            TestRunDocumentStore(container[IdGenerator], TransientDocumentDatabase())
+        )
         container[CustomerStore] = await stack.enter_async_context(
             CustomerDocumentStore(container[IdGenerator], TransientDocumentDatabase())
         )
         container[GuidelineToolAssociationStore] = await stack.enter_async_context(
             GuidelineToolAssociationDocumentStore(
+                container[IdGenerator], TransientDocumentDatabase()
+            )
+        )
+        container[AgentToolAssociationStore] = await stack.enter_async_context(
+            AgentToolAssociationDocumentStore(
                 container[IdGenerator], TransientDocumentDatabase()
             )
         )

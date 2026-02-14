@@ -174,6 +174,7 @@ from parlant.api.app import create_api_app, ASGIApplication
 from parlant.core.background_tasks import BackgroundTaskService
 from parlant.core.tracer import LocalTracer, Tracer
 from parlant.core.agents import AgentDocumentStore, AgentStore
+from parlant.core.playbooks import PlaybookDocumentStore, PlaybookStore
 from parlant.core.context_variables import ContextVariableDocumentStore, ContextVariableStore
 from parlant.core.emission.event_publisher import EventPublisherFactory
 from parlant.core.emissions import EventEmitterFactory
@@ -220,6 +221,11 @@ from parlant.core.guideline_tool_associations import (
     GuidelineToolAssociationDocumentStore,
     GuidelineToolAssociationStore,
 )
+from parlant.core.agent_tool_associations import (
+    AgentToolAssociationDocumentStore,
+    AgentToolAssociationStore,
+)
+from parlant.core.engines.alpha.simple_agent import register_simple_agent_hook
 from parlant.core.engines.alpha.tool_calling import single_tool_batch
 from parlant.core.engines.alpha.tool_calling.default_tool_call_batcher import DefaultToolCallBatcher
 from parlant.core.engines.alpha.tool_calling.single_tool_batch import (
@@ -240,6 +246,13 @@ from parlant.core.engines.types import Engine
 from parlant.core.services.indexing.behavioral_change_evaluation import BehavioralChangeEvaluator
 from parlant.core.loggers import CompositeLogger, FileLogger, LogLevel, Logger
 from parlant.core.application import Application
+from parlant.core.test_suites import (
+    TestSuiteStore,
+    TestSuiteDocumentStore,
+    TestRunStore,
+    TestRunDocumentStore,
+)
+from parlant.core.app_modules.test_suites import TestSuiteModule
 from parlant.core.version import VERSION
 
 
@@ -645,6 +658,7 @@ async def setup_container() -> AsyncIterator[Container]:
 
     _define_singleton(c, Engine, AlphaEngine)
 
+    _define_singleton(c, TestSuiteModule, TestSuiteModule)
     _define_singleton(c, Application, Application)
 
     yield c
@@ -761,6 +775,7 @@ async def initialize_container(
     try:
         for interface, implementation, filename in [
             (AgentStore, AgentDocumentStore, "agents.json"),
+            (PlaybookStore, PlaybookDocumentStore, "playbooks.json"),
             (ContextVariableStore, ContextVariableDocumentStore, "context_variables.json"),
             (CustomerStore, CustomerDocumentStore, "customers.json"),
             (EvaluationStore, EvaluationDocumentStore, "evaluations.json"),
@@ -771,8 +786,15 @@ async def initialize_container(
                 GuidelineToolAssociationDocumentStore,
                 "guideline_tool_associations.json",
             ),
+            (
+                AgentToolAssociationStore,
+                AgentToolAssociationDocumentStore,
+                "agent_tool_associations.json",
+            ),
             (RelationshipStore, RelationshipDocumentStore, "relationships.json"),
             (SessionStore, SessionDocumentStore, "sessions.json"),
+            (TestSuiteStore, TestSuiteDocumentStore, "test_suites.json"),
+            (TestRunStore, TestRunDocumentStore, "test_runs.json"),
         ]:
             await try_define_document_store(interface, implementation, filename)
 
@@ -838,6 +860,16 @@ async def initialize_container(
                 get_embedder_type,
                 embedder_factory,
             )
+
+        # Register simple agent hook for agents tagged with "simple-agent"
+        register_simple_agent_hook(
+            hooks=c[EngineHooks],
+            service_registry=c[ServiceRegistry],
+            association_store=c[AgentToolAssociationStore],
+            tag_store=c[TagStore],
+            variable_store=c[ContextVariableStore],
+            logger=c[Logger],
+        )
 
     except MigrationRequired as e:
         c[Logger].critical(str(e))

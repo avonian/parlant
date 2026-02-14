@@ -99,6 +99,33 @@ class BackgroundTaskService:
             self._tasks[tag] = task
             return task
 
+    async def wait_for_task(self, *, tag: str, timeout: Optional[float] = None) -> bool:
+        """Wait for a specific task to complete.
+
+        Args:
+            tag: The tag of the task to wait for.
+            timeout: Maximum time to wait in seconds. None means wait indefinitely.
+
+        Returns:
+            True if the task completed (or didn't exist), False if timeout.
+        """
+        task: Optional[Task] = None
+        async with self._lock:
+            task = self._tasks.get(tag)
+
+        if task is None or task.done():
+            return True
+
+        try:
+            # Shield the task so our wait doesn't cancel it
+            await asyncio.wait_for(asyncio.shield(task), timeout)
+            return True
+        except asyncio.TimeoutError:
+            return False
+        except Exception:
+            # Task raised an exception, but it's done
+            return True
+
     async def collect(self, *, force: bool = False) -> None:
         now = asyncio.get_event_loop().time()
 

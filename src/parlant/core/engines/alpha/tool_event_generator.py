@@ -142,6 +142,7 @@ class ToolEventGenerator:
             tool_enabled_guideline_matches=context.state.tool_enabled_guideline_matches,
             journeys=context.state.journeys,
             staged_events=context.state.tool_events,
+            effective_model_name=context.effective_model_name,
         )
 
         async with self._hist_tool_call_duration.measure():
