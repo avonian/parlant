@@ -18,7 +18,7 @@ from typing import Mapping, Optional, Sequence, cast
 from cachetools import TTLCache
 
 from parlant.core import async_utils
-from parlant.core.agents import Agent, AgentId, AgentStore
+from parlant.core.agents import Agent, AgentId, AgentStore, CompositionMode
 from parlant.core.capabilities import Capability, CapabilityStore
 from parlant.core.common import JSONSerializable
 from parlant.core.context_variables import (
@@ -35,6 +35,7 @@ from parlant.core.journey_guideline_projection import (
 )
 from parlant.core.guidelines import (
     Guideline,
+    GuidelineContent,
     GuidelineId,
     GuidelineStore,
 )
@@ -48,7 +49,7 @@ from parlant.core.guideline_tool_associations import (
     GuidelineToolAssociation,
     GuidelineToolAssociationStore,
 )
-from parlant.core.glossary import GlossaryStore, Term
+from parlant.core.glossary import GlossaryStore, Term, TermId
 from parlant.core.app_modules.sessions import SessionUpdateParamsModel
 from parlant.core.playbooks import Playbook, PlaybookId, PlaybookStore
 from parlant.core.sessions import (
@@ -58,9 +59,10 @@ from parlant.core.sessions import (
     Event,
 )
 from parlant.core.services.tools.service_registry import ServiceRegistry
+from parlant.core.static_playbooks import StaticPlaybook, StaticPlaybookId, StaticPlaybookStore
 from parlant.core.tags import Tag, TagId, TagStore
 from parlant.core.tools import ToolId, ToolService
-from parlant.core.canned_responses import CannedResponse, CannedResponseStore
+from parlant.core.canned_responses import CannedResponse, CannedResponseField, CannedResponseId, CannedResponseStore
 
 
 class EntityQueries:
@@ -81,6 +83,7 @@ class EntityQueries:
         journey_guideline_projection: JourneyGuidelineProjection,
         playbook_store: PlaybookStore,
         tag_store: TagStore,
+        static_playbook_store: StaticPlaybookStore,
     ) -> None:
         self._agent_store = agent_store
         self._session_store = session_store
@@ -97,10 +100,128 @@ class EntityQueries:
         self._journey_guideline_projection = journey_guideline_projection
         self._playbook_store = playbook_store
         self._tag_store = tag_store
+        self._static_playbook_store = static_playbook_store
 
         self.guideline_and_journeys_it_depends_on = TTLCache[GuidelineId, list[Journey]](
             maxsize=1024, ttl=120
         )
+
+    async def _read_static_playbook(
+        self, static_playbook_id: str
+    ) -> Optional[StaticPlaybook]:
+        """Try to load a static playbook. Returns None if not found."""
+        try:
+            return await self._static_playbook_store.read_static_playbook(
+                StaticPlaybookId(static_playbook_id)
+            )
+        except Exception:
+            return None
+
+    def _static_guidelines_to_domain(
+        self, static_playbook: StaticPlaybook
+    ) -> list[Guideline]:
+        """Convert static playbook guidelines to domain Guideline objects."""
+        from parlant.core.common import Criticality  # avoid circular at module level
+
+        result: list[Guideline] = []
+        for sg in static_playbook.guidelines:
+            criticality = Criticality.MEDIUM
+            try:
+                criticality = Criticality(sg.criticality)
+            except ValueError:
+                pass
+
+            composition_mode: Optional[CompositionMode] = None
+            if sg.composition_mode:
+                try:
+                    composition_mode = CompositionMode(sg.composition_mode)
+                except ValueError:
+                    pass
+
+            result.append(
+                Guideline(
+                    id=GuidelineId(sg.id),
+                    creation_utc=static_playbook.creation_utc,
+                    content=GuidelineContent(
+                        condition=sg.condition,
+                        action=sg.action,
+                        description=sg.description,
+                    ),
+                    enabled=sg.enabled,
+                    tags=[],
+                    metadata=dict(sg.metadata),
+                    criticality=criticality,
+                    labels=set(sg.labels),
+                    composition_mode=composition_mode,
+                    track=sg.track,
+                )
+            )
+        return result
+
+    def _static_terms_to_domain(
+        self, static_playbook: StaticPlaybook
+    ) -> list[Term]:
+        """Convert static playbook terms to domain Term objects."""
+        return [
+            Term(
+                id=TermId(st.id),
+                creation_utc=static_playbook.creation_utc,
+                name=st.name,
+                description=st.description,
+                synonyms=list(st.synonyms),
+                tags=[],
+            )
+            for st in static_playbook.terms
+        ]
+
+    def _static_canned_responses_to_domain(
+        self, static_playbook: StaticPlaybook
+    ) -> list[CannedResponse]:
+        """Convert static playbook canned responses to domain CannedResponse objects."""
+        return [
+            CannedResponse(
+                id=CannedResponseId(scr.id),
+                creation_utc=static_playbook.creation_utc,
+                value=scr.value,
+                fields=[
+                    CannedResponseField(
+                        name=f.get("name", ""),
+                        description=f.get("description", ""),
+                        examples=f.get("examples", []),
+                    )
+                    for f in scr.fields
+                ],
+                signals=list(scr.signals),
+                metadata=dict(scr.metadata),
+                tags=[],
+                field_dependencies=list(scr.field_dependencies),
+            )
+            for scr in static_playbook.canned_responses
+        ]
+
+    def _static_context_variables_to_domain(
+        self, static_playbook: StaticPlaybook
+    ) -> list[ContextVariable]:
+        """Convert static playbook context variables to domain ContextVariable objects."""
+        return [
+            ContextVariable(
+                id=ContextVariableId(scv.id),
+                name=scv.name,
+                description=scv.description,
+                creation_utc=static_playbook.creation_utc,
+                tool_id=(
+                    ToolId(
+                        service_name=scv.tool_id["service_name"],
+                        tool_name=scv.tool_id["tool_name"],
+                    )
+                    if scv.tool_id
+                    else None
+                ),
+                freshness_rules=scv.freshness_rules,
+                tags=[],
+            )
+            for scv in static_playbook.context_variables
+        ]
 
     async def read_agent(
         self,
@@ -207,7 +328,14 @@ class EntityQueries:
         self,
         agent_id: AgentId,
         journeys: Sequence[Journey],
+        static_playbook_id: Optional[str] = None,
     ) -> Sequence[Guideline]:
+        # Static playbook bypass: return pre-resolved guidelines directly
+        if static_playbook_id:
+            static_pb = await self._read_static_playbook(static_playbook_id)
+            if static_pb:
+                return self._static_guidelines_to_domain(static_pb)
+
         agent_guidelines = await self._guideline_store.list_guidelines(
             tags=[Tag.for_agent_id(agent_id)],
         )
@@ -329,7 +457,14 @@ class EntityQueries:
     async def find_context_variables_for_context(
         self,
         agent_id: AgentId,
+        static_playbook_id: Optional[str] = None,
     ) -> Sequence[ContextVariable]:
+        # Static playbook bypass
+        if static_playbook_id:
+            static_pb = await self._read_static_playbook(static_playbook_id)
+            if static_pb:
+                return self._static_context_variables_to_domain(static_pb)
+
         agent_context_variables = await self._context_variable_store.list_variables(
             tags=[Tag.for_agent_id(agent_id)],
         )
@@ -429,7 +564,14 @@ class EntityQueries:
         self,
         agent_id: AgentId,
         query: str,
+        static_playbook_id: Optional[str] = None,
     ) -> Sequence[Term]:
+        # Static playbook bypass — return all terms without relevance filtering
+        if static_playbook_id:
+            static_pb = await self._read_static_playbook(static_playbook_id)
+            if static_pb:
+                return self._static_terms_to_domain(static_pb)
+
         agent_terms = await self._glossary_store.list_terms(
             tags=[Tag.for_agent_id(agent_id)],
         )
@@ -460,7 +602,13 @@ class EntityQueries:
     async def finds_journeys_for_context(
         self,
         agent_id: AgentId,
+        static_playbook_id: Optional[str] = None,
     ) -> Sequence[Journey]:
+        # Static playbook bypass: no journey resolution when using a static playbook.
+        # The static playbook's guidelines already include projected journey guidelines.
+        if static_playbook_id:
+            return []
+
         agent_journeys = await self._journey_store.list_journeys(
             tags=[Tag.for_agent_id(agent_id)],
         )
@@ -503,7 +651,14 @@ class EntityQueries:
         agent: Agent,
         journeys: Sequence[Journey],
         guidelines: Sequence[Guideline],
+        static_playbook_id: Optional[str] = None,
     ) -> Sequence[CannedResponse]:
+        # Static playbook bypass
+        if static_playbook_id:
+            static_pb = await self._read_static_playbook(static_playbook_id)
+            if static_pb:
+                return self._static_canned_responses_to_domain(static_pb)
+
         agent_canreps = await self._canned_response_store.list_canned_responses(
             tags=[Tag.for_agent_id(agent.id)],
         )

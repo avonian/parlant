@@ -47,6 +47,8 @@ from parlant.api import customers
 from parlant.api import logs
 from parlant.api import canned_responses
 from parlant.api import test_suites
+from parlant.api import static_playbooks
+from parlant.api import playbook_resolve
 from parlant.api.authorization import (
     AuthorizationException,
     AuthorizationPolicy,
@@ -59,6 +61,16 @@ from parlant.core.tracer import Tracer
 from parlant.core.common import ItemNotFoundError, generate_id
 from parlant.core.loggers import Logger
 from parlant.core.agent_tool_associations import AgentToolAssociationStore
+from parlant.core.canned_responses import CannedResponseStore
+from parlant.core.context_variables import ContextVariableStore
+from parlant.core.glossary import GlossaryStore
+from parlant.core.guidelines import GuidelineStore
+from parlant.core.guideline_tool_associations import GuidelineToolAssociationStore
+from parlant.core.journeys import JourneyStore
+from parlant.core.playbooks import PlaybookStore
+from parlant.core.relationships import RelationshipStore
+from parlant.core.static_playbooks import StaticPlaybookStore
+from parlant.core.tags import TagStore
 from parlant.core.application import Application
 
 
@@ -118,6 +130,16 @@ async def create_api_app(
     authorization_policy = container[AuthorizationPolicy]
     application = container[Application]
     agent_tool_association_store = container[AgentToolAssociationStore]
+    static_playbook_store = container[StaticPlaybookStore]
+    playbook_store = container[PlaybookStore]
+    tag_store = container[TagStore]
+    guideline_store = container[GuidelineStore]
+    guideline_tool_assoc_store = container[GuidelineToolAssociationStore]
+    relationship_store = container[RelationshipStore]
+    glossary_store = container[GlossaryStore]
+    canned_response_store = container[CannedResponseStore]
+    context_variable_store = container[ContextVariableStore]
+    journey_store = container[JourneyStore]
 
     meter = container[Meter]
     _hist_http_request_duration = meter.create_duration_histogram(
@@ -403,6 +425,28 @@ async def create_api_app(
         router=playbooks.create_router(
             authorization_policy=authorization_policy,
             app=application,
+        ),
+    )
+
+    api_app.include_router(
+        prefix="/static-playbooks",
+        router=static_playbooks.create_router(
+            static_playbook_store=static_playbook_store,
+        ),
+    )
+
+    api_app.include_router(
+        prefix="/playbooks",
+        router=playbook_resolve.create_router(
+            playbook_store=playbook_store,
+            tag_store=tag_store,
+            guideline_store=guideline_store,
+            guideline_tool_association_store=guideline_tool_assoc_store,
+            relationship_store=relationship_store,
+            glossary_store=glossary_store,
+            canned_response_store=canned_response_store,
+            context_variable_store=context_variable_store,
+            journey_store=journey_store,
         ),
     )
 

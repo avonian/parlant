@@ -819,6 +819,7 @@ You will now be given the current state of the interaction to which you must gen
                     agent=agent,
                     journeys=canrep_context.journeys,
                     guidelines=[m.guideline for m in canrep_context.guideline_matches],
+                    static_playbook_id=canrep_context.session.metadata.get("static_playbook_id"),
                 )
                 if Tag.preamble() in canrep.tags
             ]
@@ -946,6 +947,7 @@ You will now be given the current state of the interaction to which you must gen
                 agent=context.agent,
                 journeys=context.journeys,
                 guidelines=[m.guideline for m in context.guideline_matches],
+                static_playbook_id=context.session.metadata.get("static_playbook_id"),
             )
             if Tag.preamble() not in canrep.tags
         ]

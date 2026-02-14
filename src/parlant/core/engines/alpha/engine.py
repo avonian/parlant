@@ -1039,6 +1039,7 @@ class AlphaEngine(Engine):
         variables_supported_by_agent = (
             await self._entity_queries.find_context_variables_for_context(
                 agent_id=context.agent.id,
+                static_playbook_id=context.session.metadata.get("static_playbook_id"),
             )
         )
 
@@ -1153,8 +1154,10 @@ class AlphaEngine(Engine):
         context: EngineContext,
     ) -> _GuidelineAndJourneyMatchingResult:
         # Step 1: Retrieve the journeys likely to be activated for this agent
+        static_pb_id = context.session.metadata.get("static_playbook_id")
         available_journeys = await self._entity_queries.finds_journeys_for_context(
             agent_id=context.agent.id,
+            static_playbook_id=static_pb_id,
         )
 
         # Step 2 : Retrieve all the guidelines for the context.
@@ -1163,6 +1166,7 @@ class AlphaEngine(Engine):
             for g in await self._entity_queries.find_guidelines_for_context(
                 agent_id=context.agent.id,
                 journeys=available_journeys,
+                static_playbook_id=static_pb_id,
             )
             if g.enabled
         }
@@ -1252,8 +1256,10 @@ class AlphaEngine(Engine):
         context: EngineContext,
     ) -> _GuidelineAndJourneyMatchingResult:
         # Step 1: Retrieve all the possible journeys for this agent
+        static_pb_id = context.session.metadata.get("static_playbook_id")
         all_journeys = await self._entity_queries.finds_journeys_for_context(
             agent_id=context.agent.id,
+            static_playbook_id=static_pb_id,
         )
 
         # Step 2 : Retrieve all the guidelines for this agent the journeys that are enabled
@@ -1262,6 +1268,7 @@ class AlphaEngine(Engine):
             for g in await self._entity_queries.find_guidelines_for_context(
                 agent_id=context.agent.id,
                 journeys=all_journeys,
+                static_playbook_id=static_pb_id,
             )
             if g.enabled
         }
@@ -1795,6 +1802,7 @@ class AlphaEngine(Engine):
             return await self._entity_queries.find_glossary_terms_for_context(
                 agent_id=context.agent.id,
                 query=query,
+                static_playbook_id=context.session.metadata.get("static_playbook_id"),
             )
 
         return []

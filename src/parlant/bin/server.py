@@ -175,6 +175,7 @@ from parlant.core.background_tasks import BackgroundTaskService
 from parlant.core.tracer import LocalTracer, Tracer
 from parlant.core.agents import AgentDocumentStore, AgentStore
 from parlant.core.playbooks import PlaybookDocumentStore, PlaybookStore
+from parlant.core.static_playbooks import StaticPlaybookDocumentStore, StaticPlaybookStore
 from parlant.core.context_variables import ContextVariableDocumentStore, ContextVariableStore
 from parlant.core.emission.event_publisher import EventPublisherFactory
 from parlant.core.emissions import EventEmitterFactory
@@ -795,6 +796,7 @@ async def initialize_container(
             (SessionStore, SessionDocumentStore, "sessions.json"),
             (TestSuiteStore, TestSuiteDocumentStore, "test_suites.json"),
             (TestRunStore, TestRunDocumentStore, "test_runs.json"),
+            (StaticPlaybookStore, StaticPlaybookDocumentStore, "static_playbooks.json"),
         ]:
             await try_define_document_store(interface, implementation, filename)
 

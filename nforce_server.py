@@ -74,6 +74,7 @@ async def run() -> None:
     from parlant.core.nlp.service import NLPService
     from parlant.core.playbooks import PlaybookDocumentStore, PlaybookStore
     from parlant.core.relationships import RelationshipDocumentStore, RelationshipStore
+    from parlant.core.static_playbooks import StaticPlaybookDocumentStore, StaticPlaybookStore
     from parlant.core.sessions import SessionStore
     from parlant.core.tags import TagDocumentStore, TagStore
     from parlant.core.test_suites import TestSuiteDocumentStore, TestSuiteStore
@@ -133,6 +134,11 @@ async def run() -> None:
         # Evaluation store (no id_generator)
         container[EvaluationStore] = await exit_stack.enter_async_context(
             EvaluationDocumentStore(await make_pg_db("evaluations"))
+        )
+
+        # Static playbook store (no id_generator — IDs come from nForce)
+        container[StaticPlaybookStore] = await exit_stack.enter_async_context(
+            StaticPlaybookDocumentStore(await make_pg_db("static_playbooks"))
         )
 
         # Vector stores — pgvector for similarity search, PostgreSQL for metadata

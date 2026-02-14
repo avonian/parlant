@@ -188,6 +188,37 @@ Base upstream version at time of consolidation: v3.2.0 (upstream/develop @ 34068
 
 ---
 
+## 11. Static Playbook Store & Versioning Infrastructure
+
+**Purpose:** Support playbook versioning by providing a store for pre-resolved, self-contained playbook snapshots ("static playbooks"). When nForce releases a playbook version, it resolves the full playbook state (walking the inheritance chain, collecting all guidelines/terms/canned responses/context variables/relationships) and pushes the result to Parlant as a static playbook. At runtime, conversations bound to a released version bypass the normal tag-based resolution and use the static snapshot directly.
+
+**Files added:**
+- `src/parlant/core/static_playbooks.py` — StaticPlaybook domain models (StaticGuideline, StaticRelationship, StaticTerm, StaticCannedResponse, StaticContextVariable, StaticPlaybook) and StaticPlaybookDocumentStore implementation
+- `src/parlant/api/static_playbooks.py` — CRUD REST API (PUT upsert, GET read, DELETE, GET list) at `/static-playbooks`
+- `src/parlant/api/playbook_resolve.py` — `POST /playbooks/{playbookId}/resolve` endpoint that walks the playbook inheritance chain, collects all tag-scoped entities, filters disabled rules, and returns both resolved (flat) and source (original) data
+
+**Files modified:**
+- `src/parlant/core/entity_cq.py` — Added `StaticPlaybookStore` dependency and `static_playbook_id` bypass to:
+  - `find_guidelines_for_context()` — returns static guidelines when static_playbook_id is set
+  - `finds_journeys_for_context()` — returns empty list (journeys are pre-projected in static playbooks)
+  - `find_glossary_terms_for_context()` — returns static terms
+  - `find_canned_responses_for_context()` — returns static canned responses
+  - `find_context_variables_for_context()` — returns static context variables
+  - Added conversion helpers (`_static_*_to_domain`) to map static models back to core domain objects
+- `src/parlant/core/engines/alpha/engine.py` — Pass `session.metadata["static_playbook_id"]` to all entity resolution calls
+- `src/parlant/core/engines/alpha/canned_response_generator.py` — Pass `session.metadata["static_playbook_id"]` to canned response resolution calls
+- `src/parlant/api/app.py` — Mount static playbook and resolve routes, add store dependencies
+- `src/parlant/bin/server.py` — Register StaticPlaybookStore in container
+- `nforce_server.py` — Register StaticPlaybookDocumentStore with PostgreSQL backend
+
+**Key decisions:**
+- Static playbook ID is passed via session metadata (`{"static_playbook_id": "..."}`) rather than a first-class Session field, avoiding session schema migration
+- All `find_*_for_context` methods accept an optional `static_playbook_id` parameter with `None` default, maintaining backwards compatibility
+- The resolve endpoint returns both resolved (flat, for runtime) and source (original with tags/hierarchy, for audit/revert) data
+- Journey resolution is completely skipped for static playbooks since journey guidelines are already projected into the static guideline set
+
+---
+
 ## Merge Strategy
 
 When pulling upstream updates:
