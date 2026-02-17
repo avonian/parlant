@@ -4,10 +4,27 @@ All notable changes to Parlant will be documented here.
 
 ## [Unreleased]
 
+TBD
+
+## [3.2.1] - 2026-02-17
+
+### Added
+
 - Add optional `dependencies` parameter to guideline, observation, and journey creation methods
+- Add `exclude()` as an alias for `prioritize_over()` on guidelines and journeys
+- Add `tools` parameter to `create_observation` methods
+
+### Changed
+
+- Deprecate `attach_tool()` in favor of `create_guideline()`/`create_observation()` with `tools` parameter
+
+### Fixed
+
+- Preserve draft message language during canned response recomposition
+- Fix server hang when an exception occurs during setup
 - Fix canned response field extraction to handle falsy values
 
-## [3.2.0] - 2026-02-08
+## [3.2.0] - 2026-02-09
 
 ### Added
 

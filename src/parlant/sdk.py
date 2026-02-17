@@ -27,6 +27,7 @@ import importlib.util
 from itertools import chain
 from pathlib import Path
 import sys
+import warnings
 import rich
 from rich.console import Console, Group
 from rich.panel import Panel
@@ -958,6 +959,10 @@ class Guideline:
             )
             for t in targets
         ]
+
+    async def exclude(self, *targets: Guideline | Journey) -> Sequence[Relationship]:
+        """Alias for prioritize_over. Creates priority relationships with other guidelines or journeys."""
+        return await self.prioritize_over(*targets)
 
     async def depend_on(self, *targets: Guideline | Journey) -> Sequence[Relationship]:
         """Creates dependency relationships with other guidelines or journeys."""
@@ -2402,6 +2407,7 @@ class Journey:
         self,
         condition: str | None = None,
         description: str | None = None,
+        tools: Iterable[ToolEntry] = [],
         canned_responses: Sequence[CannedResponseId] = [],
         composition_mode: CompositionMode | None = None,
         matcher: Callable[[GuidelineMatchingContext, Guideline], Awaitable[GuidelineMatch]]
@@ -2417,6 +2423,7 @@ class Journey:
         return await self.create_guideline(
             condition=condition,
             description=description,
+            tools=tools,
             canned_responses=canned_responses,
             composition_mode=composition_mode,
             matcher=matcher,
@@ -2431,7 +2438,16 @@ class Journey:
         tool: ToolEntry,
         condition: str,
     ) -> GuidelineId:
-        """Attaches a tool to the journey, to be usable by the agent under the specified condition."""
+        """Attaches a tool to the journey, to be usable by the agent under the specified condition.
+
+        .. deprecated::
+            Use ``create_guideline`` or ``create_observation`` with the ``tools`` parameter instead.
+        """
+        warnings.warn(
+            "attach_tool() is deprecated. Use create_guideline() or create_observation() with the tools parameter instead.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
 
         await self._server._plugin_server.enable_tool(tool)
 
@@ -2517,6 +2533,10 @@ class Journey:
             )
             for t in targets
         ]
+
+    async def exclude(self, *targets: Guideline | Journey) -> Sequence[Relationship]:
+        """Alias for prioritize_over. Creates priority relationships with other guidelines or journeys."""
+        return await self.prioritize_over(*targets)
 
     async def depend_on(self, *targets: Guideline | Journey) -> Sequence[Relationship]:
         """Creates dependency relationships with other guidelines or journeys."""
@@ -3131,6 +3151,7 @@ class Agent:
         self,
         condition: str | None = None,
         description: str | None = None,
+        tools: Iterable[ToolEntry] = [],
         canned_responses: Sequence[CannedResponseId] = [],
         criticality: Criticality = Criticality.MEDIUM,
         composition_mode: CompositionMode | None = None,
@@ -3147,6 +3168,7 @@ class Agent:
         return await self.create_guideline(
             condition=condition,
             description=description,
+            tools=tools,
             canned_responses=canned_responses,
             composition_mode=composition_mode,
             matcher=matcher,
@@ -3162,7 +3184,16 @@ class Agent:
         tool: ToolEntry,
         condition: str,
     ) -> GuidelineId:
-        """Attaches a tool to the agent, to be usable under the specified condition."""
+        """Attaches a tool to the agent, to be usable under the specified condition.
+
+        .. deprecated::
+            Use ``create_guideline`` or ``create_observation`` with the ``tools`` parameter instead.
+        """
+        warnings.warn(
+            "attach_tool() is deprecated. Use create_guideline() or create_observation() with the tools parameter instead.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
 
         await self._server._plugin_server.enable_tool(tool)
 
