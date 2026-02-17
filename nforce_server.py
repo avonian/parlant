@@ -128,17 +128,17 @@ async def run() -> None:
             (TestSuiteStore, TestSuiteDocumentStore, "test_suites"),
         ]:
             container[interface] = await exit_stack.enter_async_context(
-                implementation(id_generator, await make_pg_db(name))
+                implementation(id_generator, await make_pg_db(name), allow_migration=True)
             )
 
         # Evaluation store (no id_generator)
         container[EvaluationStore] = await exit_stack.enter_async_context(
-            EvaluationDocumentStore(await make_pg_db("evaluations"))
+            EvaluationDocumentStore(await make_pg_db("evaluations"), allow_migration=True)
         )
 
         # Static playbook store (no id_generator — IDs come from nForce)
         container[StaticPlaybookStore] = await exit_stack.enter_async_context(
-            StaticPlaybookDocumentStore(await make_pg_db("static_playbooks"))
+            StaticPlaybookDocumentStore(await make_pg_db("static_playbooks"), allow_migration=True)
         )
 
         # Vector stores — pgvector for similarity search, PostgreSQL for metadata

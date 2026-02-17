@@ -66,6 +66,7 @@ from parlant.core.context_variables import ContextVariableStore
 from parlant.core.glossary import GlossaryStore
 from parlant.core.guidelines import GuidelineStore
 from parlant.core.guideline_tool_associations import GuidelineToolAssociationStore
+from parlant.core.journey_guideline_projection import JourneyGuidelineProjection
 from parlant.core.journeys import JourneyStore
 from parlant.core.playbooks import PlaybookStore
 from parlant.core.relationships import RelationshipStore
@@ -140,6 +141,7 @@ async def create_api_app(
     canned_response_store = container[CannedResponseStore]
     context_variable_store = container[ContextVariableStore]
     journey_store = container[JourneyStore]
+    journey_guideline_projection = container[JourneyGuidelineProjection]
 
     meter = container[Meter]
     _hist_http_request_duration = meter.create_duration_histogram(
@@ -447,6 +449,7 @@ async def create_api_app(
             canned_response_store=canned_response_store,
             context_variable_store=context_variable_store,
             journey_store=journey_store,
+            journey_guideline_projection=journey_guideline_projection,
         ),
     )
 
