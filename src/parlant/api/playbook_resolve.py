@@ -39,6 +39,7 @@ from parlant.core.guidelines import Guideline, GuidelineStore
 from parlant.core.guideline_tool_associations import (
     GuidelineToolAssociationStore,
 )
+from parlant.core.journey_guideline_projection import JourneyGuidelineProjection
 from parlant.core.journeys import Journey, JourneyStore
 from parlant.core.playbooks import Playbook, PlaybookId, PlaybookStore
 from parlant.core.relationships import (
@@ -70,8 +71,8 @@ class ResolvedGuidelineDTO(DefaultBaseModel):
 
 
 class ResolvedRelationshipDTO(DefaultBaseModel):
-    source_guideline_id: str
-    target_guideline_id: str
+    source_index: int
+    target_index: int
     kind: str
 
 
@@ -89,6 +90,7 @@ class ResolvedCannedResponseDTO(DefaultBaseModel):
     signals: list[str] = []
     field_dependencies: list[str] = []
     metadata: dict[str, Any] = {}
+    guideline_indices: list[int] = []
 
 
 class ResolvedContextVariableDTO(DefaultBaseModel):
@@ -97,6 +99,33 @@ class ResolvedContextVariableDTO(DefaultBaseModel):
     description: str | None = None
     tool_id: dict[str, str] | None = None
     freshness_rules: str | None = None
+
+
+class SourceTermDTO(DefaultBaseModel):
+    id: str
+    name: str
+    description: str
+    synonyms: list[str] = []
+    tags: list[str] = []
+
+
+class SourceCannedResponseDTO(DefaultBaseModel):
+    id: str
+    value: str
+    fields: list[dict[str, Any]] = []
+    signals: list[str] = []
+    field_dependencies: list[str] = []
+    metadata: dict[str, Any] = {}
+    tags: list[str] = []
+
+
+class SourceContextVariableDTO(DefaultBaseModel):
+    id: str
+    name: str
+    description: str | None = None
+    tool_id: dict[str, str] | None = None
+    freshness_rules: str | None = None
+    tags: list[str] = []
 
 
 class SourceGuidelineDTO(DefaultBaseModel):
@@ -152,9 +181,9 @@ class SourceDataDTO(DefaultBaseModel):
     guidelines: list[SourceGuidelineDTO] = []
     journeys: list[SourceJourneyDTO] = []
     relationships: list[SourceRelationshipDTO] = []
-    terms: list[ResolvedTermDTO] = []
-    canned_responses: list[ResolvedCannedResponseDTO] = []
-    context_variables: list[ResolvedContextVariableDTO] = []
+    terms: list[SourceTermDTO] = []
+    canned_responses: list[SourceCannedResponseDTO] = []
+    context_variables: list[SourceContextVariableDTO] = []
 
 
 class PlaybookResolveResponseDTO(DefaultBaseModel):
@@ -194,12 +223,14 @@ async def _resolve_playbook_chain(
 async def _get_playbook_tag_ids(
     tag_store: TagStore,
     playbook_chain: list[Playbook],
-) -> list[TagId]:
-    """Returns actual tag IDs for the playbook chain."""
-    if not playbook_chain:
-        return []
-
+) -> tuple[list[TagId], dict[TagId, str]]:
+    """Returns actual tag IDs for the playbook chain and a mapping from tag ID to tag name."""
     all_tags = await tag_store.list_tags()
+    tag_id_to_name = {tag.id: tag.name for tag in all_tags}
+
+    if not playbook_chain:
+        return [], tag_id_to_name
+
     tag_name_to_id = {tag.name: tag.id for tag in all_tags}
 
     tag_ids: list[TagId] = []
@@ -208,7 +239,7 @@ async def _get_playbook_tag_ids(
         if tag_name in tag_name_to_id:
             tag_ids.append(tag_name_to_id[tag_name])
 
-    return tag_ids
+    return tag_ids, tag_id_to_name
 
 
 def _get_disabled_rule_ids(
@@ -240,6 +271,7 @@ def create_router(
     canned_response_store: CannedResponseStore,
     context_variable_store: ContextVariableStore,
     journey_store: JourneyStore,
+    journey_guideline_projection: JourneyGuidelineProjection,
 ) -> APIRouter:
     router = APIRouter()
 
@@ -271,7 +303,7 @@ def create_router(
             )
 
         # 2. Collect tags from chain
-        playbook_tag_ids = await _get_playbook_tag_ids(tag_store, pb_chain)
+        playbook_tag_ids, tag_id_to_name = await _get_playbook_tag_ids(tag_store, pb_chain)
 
         # 3. Collect disabled rules
         disabled_guideline_ids = _get_disabled_rule_ids(pb_chain, "guideline")
@@ -344,13 +376,42 @@ def create_router(
                 )
             )
 
-        # Note: Journey guideline projection is not included here because
-        # the resolve endpoint focuses on the source/modeling state.
-        # Journey projections happen at runtime in the engine.
-        # The source journeys are preserved for the nForce frontend.
+        # Project journey nodes into synthetic resolved guidelines
+        for j in all_journeys:
+            if not j.conditions:
+                continue
+            try:
+                projected = await journey_guideline_projection.project_journey_to_guidelines(j.id)
+                for pg in projected:
+                    resolved_guidelines.append(
+                        ResolvedGuidelineDTO(
+                            id=pg.id,
+                            condition=pg.content.condition,
+                            action=pg.content.action,
+                            description=pg.content.description,
+                            criticality=pg.criticality.value if hasattr(pg.criticality, "value") else str(pg.criticality),
+                            composition_mode=pg.composition_mode.value if pg.composition_mode and hasattr(pg.composition_mode, "value") else (str(pg.composition_mode) if pg.composition_mode else None),
+                            track=pg.track,
+                            labels=list(pg.labels) if pg.labels else [],
+                            enabled=pg.enabled,
+                            metadata=dict(pg.metadata),
+                            tool_ids=[],
+                            journey_origin={
+                                "journey_id": j.id,
+                                "journey_title": j.title,
+                                "node_id": pg.id.split(":")[1] if ":" in pg.id else pg.id,
+                            },
+                        )
+                    )
+            except Exception:
+                pass
 
-        # 8. Collect relationships involving our resolved guideline IDs
-        resolved_guideline_ids = {g.id for g in resolved_guidelines}
+        # 8. Build guideline ID → index map for index-based relationships
+        guideline_id_to_index: dict[str, int] = {
+            g.id: i for i, g in enumerate(resolved_guidelines)
+        }
+        resolved_guideline_ids = set(guideline_id_to_index.keys())
+
         all_relationships = await relationship_store.list_relationships(indirect=False)
         relevant_relationships: list[ResolvedRelationshipDTO] = []
 
@@ -360,11 +421,11 @@ def create_router(
             source_relevant = source_is_guideline and r.source.id in resolved_guideline_ids
             target_relevant = target_is_guideline and r.target.id in resolved_guideline_ids
 
-            if source_relevant or target_relevant:
+            if source_relevant and target_relevant:
                 relevant_relationships.append(
                     ResolvedRelationshipDTO(
-                        source_guideline_id=r.source.id,
-                        target_guideline_id=r.target.id,
+                        source_index=guideline_id_to_index[r.source.id],
+                        target_index=guideline_id_to_index[r.target.id],
                         kind=r.kind.value if hasattr(r.kind, "value") else str(r.kind),
                     )
                 )
@@ -407,6 +468,15 @@ def create_router(
             if cr.id not in disabled_canrep_ids
         ]
 
+        # Build canned response → guideline index mapping.
+        # Canned responses with composition modes (canned_fluid, composited_canned,
+        # strict_canned) are triggered by guidelines that share those modes.
+        canned_composition_modes = {"canned_fluid", "composited_canned", "strict_canned"}
+        canned_guideline_indices: list[int] = [
+            i for i, g in enumerate(resolved_guidelines)
+            if g.composition_mode in canned_composition_modes
+        ]
+
         resolved_canreps = [
             ResolvedCannedResponseDTO(
                 id=cr.id,
@@ -422,6 +492,7 @@ def create_router(
                 signals=list(cr.signals),
                 field_dependencies=list(cr.field_dependencies),
                 metadata=dict(cr.metadata),
+                guideline_indices=canned_guideline_indices,
             )
             for cr in all_canreps
         ]
@@ -458,7 +529,61 @@ def create_router(
             for cv in all_cvs
         ]
 
-        # 12. Build source data
+        # 12. Build source data (with tags for provenance)
+        # Resolve tag IDs to tag names so the frontend can identify playbook ownership
+        def resolve_tags(tag_ids: Sequence[str]) -> list[str]:
+            return [tag_id_to_name.get(tid, tid) for tid in tag_ids]
+
+        source_terms = [
+            SourceTermDTO(
+                id=t.id,
+                name=t.name,
+                description=t.description,
+                synonyms=list(t.synonyms),
+                tags=resolve_tags(t.tags),
+            )
+            for t in all_terms
+        ]
+
+        source_canreps = [
+            SourceCannedResponseDTO(
+                id=cr.id,
+                value=cr.value,
+                fields=[
+                    {
+                        "name": f.name,
+                        "description": f.description,
+                        "examples": list(f.examples),
+                    }
+                    for f in cr.fields
+                ],
+                signals=list(cr.signals),
+                field_dependencies=list(cr.field_dependencies),
+                metadata=dict(cr.metadata),
+                tags=resolve_tags(cr.tags),
+            )
+            for cr in all_canreps
+        ]
+
+        source_cvs = [
+            SourceContextVariableDTO(
+                id=cv.id,
+                name=cv.name,
+                description=cv.description,
+                tool_id=(
+                    {
+                        "service_name": cv.tool_id.service_name,
+                        "tool_name": cv.tool_id.tool_name,
+                    }
+                    if cv.tool_id
+                    else None
+                ),
+                freshness_rules=cv.freshness_rules,
+                tags=resolve_tags(cv.tags),
+            )
+            for cv in all_cvs
+        ]
+
         source_guidelines = [
             SourceGuidelineDTO(
                 id=g.id,
@@ -469,7 +594,7 @@ def create_router(
                 composition_mode=g.composition_mode.value if g.composition_mode and hasattr(g.composition_mode, "value") else (str(g.composition_mode) if g.composition_mode else None),
                 track=g.track,
                 labels=list(g.labels),
-                tags=list(g.tags),
+                tags=resolve_tags(g.tags),
                 tool_ids=guideline_tool_map.get(g.id, []),
             )
             for g in all_source_guidelines
@@ -514,7 +639,7 @@ def create_router(
                     title=j.title,
                     description=j.description,
                     conditions=list(j.conditions),
-                    tags=list(j.tags),
+                    tags=resolve_tags(j.tags),
                     composition_mode=j.composition_mode.value if j.composition_mode and hasattr(j.composition_mode, "value") else None,
                     nodes=nodes,
                     edges=edges,
@@ -546,9 +671,9 @@ def create_router(
                 guidelines=source_guidelines,
                 journeys=source_journeys,
                 relationships=source_relationships,
-                terms=resolved_terms,
-                canned_responses=resolved_canreps,
-                context_variables=resolved_cvs,
+                terms=source_terms,
+                canned_responses=source_canreps,
+                context_variables=source_cvs,
             ),
         )
 
