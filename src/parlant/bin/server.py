@@ -1056,6 +1056,7 @@ async def serve_app(
         port=port,
         log_level="critical",
         timeout_graceful_shutdown=1,
+        timeout_keep_alive=300,  # 5 minutes; default 5s can kill SSE streams
         ws="wsproto",
     )
     server = uvicorn.Server(config)

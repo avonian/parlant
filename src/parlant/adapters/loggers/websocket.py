@@ -13,6 +13,7 @@
 # limitations under the License.
 
 import asyncio
+import json
 from collections import deque
 from dataclasses import dataclass
 from typing import Any
@@ -45,6 +46,17 @@ class WebSocketLogger(TracingLogger):
         self._socket_subscriptions: dict[UniqueId, WebSocketSubscription] = {}
         self._lock = asyncio.Lock()
 
+        # SSE queue sinks: registered by /v2/process to receive log events inline
+        self._sse_sinks: dict[str, asyncio.Queue] = {}
+
+    def register_sse_sink(self, sink_id: str, queue: asyncio.Queue) -> None:
+        """Register an SSE queue to receive log payloads as formatted SSE frames."""
+        self._sse_sinks[sink_id] = queue
+
+    def unregister_sse_sink(self, sink_id: str) -> None:
+        """Remove an SSE queue sink."""
+        self._sse_sinks.pop(sink_id, None)
+
     def _enqueue_message(self, timestamp: str, level: str, message: str) -> None:
         payload = {
             "level": level,
@@ -57,6 +69,15 @@ class WebSocketLogger(TracingLogger):
 
         self._message_queue.append(payload)
         self._messages_in_queue.release()
+
+        # Also push to any registered SSE sinks
+        if self._sse_sinks:
+            frame = f"event: log\ndata: {json.dumps(payload)}\n\n"
+            for queue in self._sse_sinks.values():
+                try:
+                    queue.put_nowait(frame)
+                except asyncio.QueueFull:
+                    pass
 
     async def subscribe(self, web_socket: WebSocket) -> WebSocketSubscription:
         socket_id = generate_id()

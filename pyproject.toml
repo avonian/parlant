@@ -1,6 +1,6 @@
 [project]
 name = "parlant"
-version = "3.2.1-nforce"
+version = "3.2.1+nforce"
 description = ""
 readme = "README.md"
 license = "Apache-2.0"

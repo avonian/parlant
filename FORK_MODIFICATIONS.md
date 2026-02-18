@@ -219,6 +219,38 @@ Base upstream version at time of consolidation: v3.2.0 (upstream/develop @ 34068
 
 ---
 
+## 12. Stateless /v2/process Endpoint
+
+**Purpose:** Replace the sync-based integration pattern (where nForce mirrors agents, sessions, guidelines, tools, etc. via 15+ CRUD endpoints) with a single stateless `POST /v2/process` endpoint. nForce sends all context inline in each request; Parlant processes it and streams back SSE events. No pre-synced state required.
+
+**Files added:**
+- `src/parlant/api/v2_process.py` — Stateless `POST /v2/process` endpoint. Accepts full context (agent, customer, history, guidelines, terms, canned responses, context variables, tools, engine state) in a single request. Builds `InMemoryEntityQueries` and `InMemorySessionStore` from the payload, runs the engine, and streams SSE events (status, tool, message, state, log).
+- `src/parlant/core/engines/alpha/in_memory_entity_queries.py` — `InMemoryEntityQueries` implementation of the `EntityQueries` interface that returns data from the request payload instead of the database. The engine runs unmodified against this interface.
+- `src/parlant/core/engines/alpha/in_memory_session_store.py` — Ephemeral session/event store for within-request event tracking. The engine writes and reads events during processing (e.g., staged tool events); this handles that lifecycle without touching any database.
+- `src/parlant/core/engines/alpha/callback_tool_service.py` — `CallbackToolService` implementing `ToolService`. When the engine calls a tool, it POSTs to nForce's callback URL instead of using the SDK plugin protocol.
+- `src/parlant/core/engines/alpha/sse_event_emitter.py` — `SSEEventEmitter` implementing `EventEmitter`. Collects engine events into an async queue and yields SSE-formatted strings for `StreamingResponse`.
+
+**Files modified:**
+- `src/parlant/api/app.py` — Mount `/v2/process` router. HTTP middlewares (`handle_cancellation`, `add_trace_id`) bypass `/v2/process` via `_STREAMING_PATHS` to avoid Starlette's `call_next()` response buffering which breaks SSE streaming.
+- `src/parlant/bin/server.py` — Set `timeout_keep_alive=300` in uvicorn config. The default (5s) kills SSE streaming connections during engine processing.
+- `src/parlant/adapters/loggers/websocket.py` — Added SSE sink mechanism (`register_sse_sink`/`unregister_sse_sink`). The `/v2/process` endpoint registers the SSE emitter's queue as a sink so engine trace logs from all sub-components (guideline matcher, message generator, etc.) are piped into the SSE stream as `log` events.
+
+**Note:** All existing upstream CRUD routers (agents, sessions, customers, etc.) are kept intact. nForce no longer calls them for sync, but they remain available for standalone Parlant tooling and to minimize merge conflicts with upstream.
+
+**SSE streaming details:**
+- The event stream sends an initial `": stream-start\n\n"` SSE comment to confirm the connection is live
+- Keepalive comments (`": keepalive\n\n"`) are sent every 2 seconds during idle periods
+- History events with `kind=message` that lack a `participant` field get a synthetic one injected (defensive fix for engine compatibility)
+
+**Key decisions:**
+- The engine (`engines/alpha/`) is completely untouched — `InMemoryEntityQueries` implements the same `EntityQueries` interface the engine already uses
+- Tool execution uses HTTP callbacks (Parlant POSTs to nForce) instead of the SDK plugin protocol
+- `engine_state` (applied guideline IDs, journey paths) is round-tripped: sent in the request, returned in a `state` SSE event for the caller to persist
+- CRUD routers for playbooks, guidelines, terms, journeys, etc. are kept — nForce's frontend still uses them through a proxy for playbook authoring
+- Both `/v2/process` and remaining CRUD endpoints coexist during migration
+
+---
+
 ## Merge Strategy
 
 When pulling upstream updates:
@@ -230,8 +262,10 @@ git merge upstream/develop
 
 Areas most likely to conflict:
 1. **`entity_cq.py`** — Heavy modifications for playbook resolution
-2. **`agents.py` (core + api)** — New fields (playbook_id, model_name, composition_mode)
-3. **`app.py` / `server.py`** — Route mounting and adapter registration
+2. **`agents.py` (core)** — New fields (playbook_id, model_name, composition_mode)
+3. **`app.py` / `server.py`** — Route mounting, middleware bypass for SSE, and uvicorn config changes
 4. **`sdk.py`** — Extended SDK for playbooks, simple agent, test suites
 5. **`litellm_service.py`** — Overlapping fixes with upstream
 6. **`tool_caller.py`** — Simple agent tool calling additions
+
+Note: §12 adds the `/v2/process` endpoint and modifies `app.py`/`server.py`. Upstream CRUD routers are kept intact — conflicts are unlikely unless upstream restructures the middleware stack or uvicorn config.

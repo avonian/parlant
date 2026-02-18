@@ -31,16 +31,16 @@ from starlette.routing import Match
 from lagom import Container
 
 from parlant.adapters.loggers.websocket import WebSocketLogger
-from parlant.api import agents, capabilities
+from parlant.api import agents, capabilities, v2_process
 from parlant.api import agent_tool_associations
 from parlant.api import evaluations
 from parlant.api import journeys
 from parlant.api import playbooks
 from parlant.api import relationships
-from parlant.api import sessions
 from parlant.api import glossary
 from parlant.api import guidelines
 from parlant.api import context_variables as variables
+from parlant.api import sessions
 from parlant.api import services
 from parlant.api import tags
 from parlant.api import customers
@@ -55,6 +55,13 @@ from parlant.api.authorization import (
     Operation,
     RateLimitExceededException,
 )
+from parlant.core.engines.alpha.canned_response_generator import CannedResponseGenerator
+from parlant.core.engines.alpha.guideline_matching.guideline_matcher import GuidelineMatcher
+from parlant.core.engines.alpha.hooks import EngineHooks
+from parlant.core.engines.alpha.message_generator import MessageGenerator
+from parlant.core.engines.alpha.perceived_performance_policy import PerceivedPerformancePolicyProvider
+from parlant.core.engines.alpha.relational_resolver import RelationalResolver
+from parlant.core.engines.alpha.tool_event_generator import ToolEventGenerator
 from parlant.core.version import VERSION
 from parlant.core.meter import Meter
 from parlant.core.tracer import Tracer
@@ -143,6 +150,14 @@ async def create_api_app(
     journey_store = container[JourneyStore]
     journey_guideline_projection = container[JourneyGuidelineProjection]
 
+    guideline_matcher = container[GuidelineMatcher]
+    relational_resolver = container[RelationalResolver]
+    tool_event_generator = container[ToolEventGenerator]
+    fluid_message_generator = container[MessageGenerator]
+    canned_response_gen = container[CannedResponseGenerator]
+    perceived_performance_provider = container[PerceivedPerformancePolicyProvider]
+    engine_hooks = container[EngineHooks]
+
     meter = container[Meter]
     _hist_http_request_duration = meter.create_duration_histogram(
         name="httpreq",
@@ -156,6 +171,10 @@ async def create_api_app(
     )
 
     api_app = await authorization_policy.configure_app(api_app)
+
+    # SSE streaming endpoints must bypass HTTP middlewares that use call_next(),
+    # because Starlette's call_next() buffers the full response body, breaking streaming.
+    _STREAMING_PATHS = ("/v2/process",)
 
     @api_app.middleware("http")
     async def propagate_contextvars_into_request_task(
@@ -171,6 +190,8 @@ async def create_api_app(
         request: Request,
         call_next: Callable[[Request], Awaitable[Response]],
     ) -> Response:
+        if request.url.path in _STREAMING_PATHS:
+            return await call_next(request)
         try:
             return await call_next(request)
         except asyncio.CancelledError:
@@ -181,6 +202,10 @@ async def create_api_app(
         request: Request,
         call_next: Callable[[Request], Awaitable[Response]],
     ) -> Response:
+        # Skip tracing/metrics for streaming endpoints to avoid response buffering
+        if request.url.path in _STREAMING_PATHS:
+            return await call_next(request)
+
         if (
             request.url.path.startswith("/docs")
             or request.url.path.startswith("/redoc")
@@ -457,6 +482,22 @@ async def create_api_app(
         router=logs.create_router(
             websocket_logger,
         )
+    )
+
+    api_app.include_router(
+        router=v2_process.create_router(
+            logger=logger,
+            tracer=tracer,
+            meter=meter,
+            websocket_logger=websocket_logger,
+            guideline_matcher=guideline_matcher,
+            relational_resolver=relational_resolver,
+            tool_event_generator=tool_event_generator,
+            message_generator=fluid_message_generator,
+            canned_response_generator=canned_response_gen,
+            perceived_performance_policy_provider=perceived_performance_provider,
+            hooks=engine_hooks,
+        ),
     )
 
     # Call configure_api hook if provided
