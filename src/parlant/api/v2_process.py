@@ -84,6 +84,7 @@ class AgentDTO(BaseModel):
     composition_mode: str = "fluid"
     message_output_mode: str = "block"
     max_engine_iterations: int = 5
+    tags: list[str] = Field(default_factory=list)
 
 
 class CustomerDTO(BaseModel):
@@ -206,7 +207,7 @@ def _to_agent(dto: AgentDTO) -> Agent:
         description=dto.description,
         creation_utc=datetime.now(timezone.utc),
         max_engine_iterations=dto.max_engine_iterations,
-        tags=[],
+        tags=[TagId(t) for t in dto.tags],
         composition_mode=composition_mode,
         message_output_mode=message_output_mode,
         model_name=dto.model_name,
@@ -774,6 +775,35 @@ def create_router(
             tools=all_tools,
             metadata=request.metadata,
         )
+
+        # Stash inline data for SimpleAgentHook via side-channel (not session
+        # metadata, which gets serialized in tool callback payloads).
+        from parlant.core.engines.alpha.simple_agent import (
+            ToolDefinition,
+            tool_to_openai_schema,
+            set_inline_data,
+        )
+
+        inline_tool_defs: list[ToolDefinition] = []
+        for svc_name, svc_tools in tool_services.items():
+            svc = callback_services[svc_name]
+            for tool in svc_tools.values():
+                inline_tool_defs.append(
+                    ToolDefinition(
+                        service_name=svc_name,
+                        service=svc,
+                        tool=tool,
+                        openai_schema=tool_to_openai_schema(tool),
+                    )
+                )
+
+        inline_cv_pairs = [
+            (var, cv_values[var.id])
+            for var in context_variables
+            if var.id in cv_values
+        ]
+
+        set_inline_data(session_id, inline_tool_defs, inline_cv_pairs)
 
         # 5. Build in-memory entity queries
         entity_queries = InMemoryEntityQueries(

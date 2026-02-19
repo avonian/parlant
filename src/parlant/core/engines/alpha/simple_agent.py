@@ -53,6 +53,8 @@ from parlant.core.tools import Tool, ToolContext, ToolId, ToolResult, ToolServic
 from parlant.core.agent_tool_associations import AgentToolAssociationStore
 from parlant.core.tags import TagStore
 
+from parlant.core.sessions import SessionId
+
 SIMPLE_AGENT_TAG = "simple-agent"
 
 # Environment variables - aligned with Parlant's LiteLLM service
@@ -61,6 +63,25 @@ LITELLM_BASE_URL_ENV = "LITELLM_PROVIDER_BASE_URL"
 SIMPLE_AGENT_MAX_ITERATIONS_ENV = "SIMPLE_AGENT_MAX_ITERATIONS"
 
 DEFAULT_MAX_ITERATIONS = 10
+
+# Per-request side-channel for inline data from v2_process (avoids putting
+# non-serializable objects in session.metadata which gets JSON-serialized).
+_inline_data: dict[SessionId, dict[str, Any]] = {}
+
+
+def set_inline_data(
+    session_id: SessionId,
+    tool_definitions: list["ToolDefinition"],
+    context_variables: list[tuple[ContextVariable, ContextVariableValue]],
+) -> None:
+    _inline_data[session_id] = {
+        "tools": tool_definitions,
+        "context_variables": context_variables,
+    }
+
+
+def _pop_inline_data(session_id: SessionId) -> dict[str, Any]:
+    return _inline_data.pop(session_id, {})
 
 
 class SimpleAgentConfigurationError(Exception):
@@ -226,12 +247,14 @@ class SimpleAgentHook:
     async def _is_simple_agent(self, agent: Agent) -> bool:
         """Check if agent has a tag named 'simple-agent'."""
         for tag_id in agent.tags:
+            # In stateless mode the tag ID is the tag name directly
+            if str(tag_id) == SIMPLE_AGENT_TAG:
+                return True
             try:
                 tag = await self._tag_store.read_tag(tag_id)
                 if tag.name == SIMPLE_AGENT_TAG:
                     return True
             except Exception:
-                # Skip tags that can't be read
                 continue
         return False
 
@@ -263,8 +286,9 @@ class SimpleAgentHook:
         tools: list[ToolDefinition],
     ) -> str:
         """Run the LiteLLM tool-calling loop."""
+        model = context.agent.model_name or self._model
         self._logger.trace(
-            f"SimpleAgent: Starting tool loop with model={self._model}, "
+            f"SimpleAgent: Starting tool loop with model={model}, "
             f"tools={[t.tool.name for t in tools]}"
         )
 
@@ -288,9 +312,10 @@ class SimpleAgentHook:
                 f"Messages:\n{json.dumps(messages, indent=2)}"
             )
 
-            # Call LLM
+            # Call LLM — prefer agent-specific model, fall back to global default
+            model = context.agent.model_name or self._model
             response = await litellm.acompletion(
-                model=self._model,
+                model=model,
                 messages=messages,
                 tools=tool_schemas,
                 base_url=self._base_url,
@@ -430,18 +455,32 @@ class SimpleAgentHook:
         # Get system prompt from agent description
         system_prompt = context.agent.description or "You are a helpful assistant."
 
+        # Load inline data from stateless request (if available)
+        inline = _pop_inline_data(context.session.id)
+
         # Load and append context variables to the system prompt
-        context_variables = await self._load_context_variables(context)
+        inline_cv = inline.get("context_variables")
+        if inline_cv:
+            context_variables = cast(
+                list[tuple[ContextVariable, ContextVariableValue]], inline_cv
+            )
+        else:
+            context_variables = await self._load_context_variables(context)
         context_section = self._format_context_variables(context_variables)
         if context_section:
             system_prompt = system_prompt + "\n" + context_section
 
-        # Gather tools associated with this agent
-        tools = await gather_agent_tools(
-            agent_id=context.agent.id,
-            association_store=self._association_store,
-            service_registry=self._service_registry,
-        )
+        # Gather tools — prefer inline tools from stateless requests,
+        # fall back to store-based lookup for persistent mode
+        inline_tools = inline.get("tools")
+        if inline_tools:
+            tools = cast(list[ToolDefinition], inline_tools)
+        else:
+            tools = await gather_agent_tools(
+                agent_id=context.agent.id,
+                association_store=self._association_store,
+                service_registry=self._service_registry,
+            )
 
         # Run the tool-calling loop
         response_content = await self._run_tool_loop(context, system_prompt, tools)

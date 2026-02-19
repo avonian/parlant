@@ -32,7 +32,24 @@ async def run() -> None:
         print("Example: openai/gpt-4o or anthropic/claude-sonnet-4-20250514")
         sys.exit(1)
 
-    from parlant.sdk import NLPServices, Server
+    from parlant.core.agent_tool_associations import AgentToolAssociationStore
+    from parlant.core.context_variables import ContextVariableStore
+    from parlant.core.engines.alpha.hooks import EngineHooks
+    from parlant.core.engines.alpha.simple_agent import register_simple_agent_hook
+    from parlant.core.loggers import Logger
+    from parlant.core.services.tools.service_registry import ServiceRegistry
+    from parlant.core.tags import TagStore
+    from parlant.sdk import Container, NLPServices, Server
+
+    async def initialize_container(c: Container) -> None:
+        register_simple_agent_hook(
+            hooks=c[EngineHooks],
+            service_registry=c[ServiceRegistry],
+            association_store=c[AgentToolAssociationStore],
+            tag_store=c[TagStore],
+            variable_store=c[ContextVariableStore],
+            logger=c[Logger],
+        )
 
     host = os.environ.get("PARLANT_HOST", "0.0.0.0")
     port = int(os.environ.get("PARLANT_PORT", "8800"))
@@ -41,6 +58,7 @@ async def run() -> None:
         host=host,
         port=port,
         nlp_service=NLPServices.litellm,
+        initialize_container=initialize_container,
     ):
         pass
 
