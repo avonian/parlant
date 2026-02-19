@@ -37,6 +37,7 @@ from parlant.core.engines.alpha.message_generator import MessageGenerator
 from parlant.core.engines.alpha.perceived_performance_policy import PerceivedPerformancePolicyProvider
 from parlant.core.engines.alpha.relational_resolver import RelationalResolver
 from parlant.core.engines.alpha.sse_event_emitter import SSEEventEmitter, _SENTINEL, _serialize_emitted_event
+from parlant.core.engines.alpha.tool_calling.tool_caller import ToolCallBatcher, ToolCaller
 from parlant.core.engines.alpha.tool_event_generator import ToolEventGenerator
 from parlant.core.engines.types import Context
 from parlant.core.entity_cq import EntityCommands
@@ -66,7 +67,9 @@ from parlant.core.tools import (
     ToolOverlap,
     ToolParameterDescriptor,
     ToolParameterOptions,
+    ToolService,
 )
+from parlant.core.services.tools.service_registry import ServiceRegistry
 from parlant.core.tracer import Tracer
 
 
@@ -641,6 +644,50 @@ class _InMemoryGuidelineStore:
         raise NotImplementedError
 
 
+# ── Inline service registry for per-request tool resolution ──────────────────
+
+
+class _InlineServiceRegistry(ServiceRegistry):
+    """Minimal ServiceRegistry backed by per-request CallbackToolService instances."""
+
+    def __init__(self, services: dict[str, ToolService]) -> None:
+        self._services = services
+
+    async def read_tool_service(self, name: str) -> ToolService:
+        if name not in self._services:
+            from parlant.core.common import ItemNotFoundError, UniqueId
+            raise ItemNotFoundError(item_id=UniqueId(name))
+        return self._services[name]
+
+    # Stubs — never called during stateless processing
+    async def update_tool_service(self, *a, **kw) -> ToolService:
+        raise NotImplementedError
+
+    async def list_tool_services(self, *a, **kw):
+        return list(self._services.items())
+
+    async def delete_service(self, *a, **kw):
+        raise NotImplementedError
+
+    async def read_moderation_service(self, *a, **kw):
+        raise NotImplementedError
+
+    async def list_moderation_services(self, *a, **kw):
+        return []
+
+    async def read_nlp_service(self, *a, **kw):
+        raise NotImplementedError
+
+    async def list_nlp_services(self, *a, **kw):
+        return []
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *a):
+        pass
+
+
 # ── Router factory ────────────────────────────────────────────────────────────
 
 
@@ -651,6 +698,7 @@ def create_router(
     websocket_logger: WebSocketLogger,
     guideline_matcher: GuidelineMatcher,
     tool_event_generator: ToolEventGenerator,
+    batcher: ToolCallBatcher,
     message_generator: MessageGenerator,
     canned_response_generator: CannedResponseGenerator,
     perceived_performance_policy_provider: PerceivedPerformancePolicyProvider,
@@ -706,14 +754,21 @@ def create_router(
         # 3. Build in-memory session store
         session_store = InMemorySessionStore(session, history_events)
 
-        # 4. Build callback tool service (one per service_name)
-        #    The InMemoryEntityQueries.read_tool_service() returns the same service
-        #    for any name since all tools route to the same callback URL.
+        # 4. Build one CallbackToolService per service_name so ToolCaller
+        #    can look them up by the service_name in tool associations.
+        callback_services: dict[str, CallbackToolService] = {}
         all_tools: dict[str, Tool] = {}
-        for svc_tools in tool_services.values():
+        for svc_name, svc_tools in tool_services.items():
+            callback_services[svc_name] = CallbackToolService(
+                service_name=svc_name,
+                callback_url=request.tool_callback_url,
+                tools=svc_tools,
+                metadata=request.metadata,
+            )
             all_tools.update(svc_tools)
 
-        callback_service = CallbackToolService(
+        # Fallback service for InMemoryEntityQueries (returns any tool by name)
+        fallback_service = CallbackToolService(
             service_name="nforce-tools",
             callback_url=request.tool_callback_url,
             tools=all_tools,
@@ -731,7 +786,7 @@ def create_router(
             context_variables=context_variables,
             context_variable_values=cv_values,
             tool_associations=tool_associations,
-            tool_service=callback_service,
+            tool_service=fallback_service,
             canned_responses=canned_responses,
         )
 
@@ -761,7 +816,24 @@ def create_router(
             tracer=tracer,
         )
 
-        # 9. Create per-request engine with in-memory backing
+        # 9. Build per-request ToolCaller + ToolEventGenerator with inline service registry
+        #    so tool lookups resolve against the request's inline tools, not the container's.
+        inline_registry = _InlineServiceRegistry(callback_services)
+        per_request_tool_caller = ToolCaller(
+            logger=logger,
+            meter=meter,
+            service_registry=inline_registry,
+            batcher=batcher,
+        )
+        per_request_tool_event_generator = ToolEventGenerator(
+            logger=logger,
+            meter=meter,
+            tracer=tracer,
+            tool_caller=per_request_tool_caller,
+            service_registry=inline_registry,
+        )
+
+        # 10. Create per-request engine with in-memory backing
         engine = AlphaEngine(
             logger=logger,
             tracer=tracer,
@@ -770,7 +842,7 @@ def create_router(
             entity_commands=entity_commands,
             guideline_matcher=guideline_matcher,
             relational_resolver=relational_resolver,
-            tool_event_generator=tool_event_generator,
+            tool_event_generator=per_request_tool_event_generator,
             fluid_message_generator=message_generator,
             canned_response_generator=canned_response_generator,
             perceived_performance_policy_provider=perceived_performance_policy_provider,

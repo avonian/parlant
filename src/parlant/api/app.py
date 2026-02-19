@@ -60,6 +60,7 @@ from parlant.core.engines.alpha.guideline_matching.guideline_matcher import Guid
 from parlant.core.engines.alpha.hooks import EngineHooks
 from parlant.core.engines.alpha.message_generator import MessageGenerator
 from parlant.core.engines.alpha.perceived_performance_policy import PerceivedPerformancePolicyProvider
+from parlant.core.engines.alpha.tool_calling.tool_caller import ToolCallBatcher
 from parlant.core.engines.alpha.tool_event_generator import ToolEventGenerator
 from parlant.core.version import VERSION
 from parlant.core.meter import Meter
@@ -151,6 +152,7 @@ async def create_api_app(
 
     guideline_matcher = container[GuidelineMatcher]
     tool_event_generator = container[ToolEventGenerator]
+    tool_call_batcher = container[ToolCallBatcher]
     fluid_message_generator = container[MessageGenerator]
     canned_response_gen = container[CannedResponseGenerator]
     perceived_performance_provider = container[PerceivedPerformancePolicyProvider]
@@ -490,6 +492,7 @@ async def create_api_app(
             websocket_logger=websocket_logger,
             guideline_matcher=guideline_matcher,
             tool_event_generator=tool_event_generator,
+            batcher=tool_call_batcher,
             message_generator=fluid_message_generator,
             canned_response_generator=canned_response_gen,
             perceived_performance_policy_provider=perceived_performance_provider,
