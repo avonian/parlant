@@ -127,6 +127,7 @@ class InlineGuidelineDTO(BaseModel):
     labels: list[str] = Field(default_factory=list)
     metadata: dict[str, Any] = Field(default_factory=dict)
     tool_associations: list[str] = Field(default_factory=list)  # List of "service:tool" IDs
+    tags: list[str] = Field(default_factory=list)  # Tag IDs for relationship resolution
 
 
 class InlineTermDTO(BaseModel):
@@ -153,6 +154,15 @@ class InlineContextVariableDTO(BaseModel):
     key: str = ""  # The customer key used for lookup
 
 
+class InlineRelationshipDTO(BaseModel):
+    id: str
+    source_id: str
+    source_kind: str  # "guideline", "tag", "tool"
+    target_id: str
+    target_kind: str  # "guideline", "tag", "tool"
+    kind: str  # "entailment", "priority", "dependency", etc.
+
+
 class EngineStateDTO(BaseModel):
     applied_guideline_ids: list[str] = Field(default_factory=list)
     journey_paths: dict[str, list[str | None]] = Field(default_factory=dict)
@@ -163,6 +173,7 @@ class ProcessRequestDTO(BaseModel):
     customer: CustomerDTO
     history: list[HistoryEventDTO] = Field(default_factory=list)
     guidelines: list[InlineGuidelineDTO] = Field(default_factory=list)
+    relationships: list[InlineRelationshipDTO] = Field(default_factory=list)
     terms: list[InlineTermDTO] = Field(default_factory=list)
     canned_responses: list[InlineCannedResponseDTO] = Field(default_factory=list)
     context_variables: list[InlineContextVariableDTO] = Field(default_factory=list)
@@ -282,7 +293,7 @@ def _to_guidelines(dtos: list[InlineGuidelineDTO]) -> list[Guideline]:
                     description=g.description,
                 ),
                 enabled=True,
-                tags=[],
+                tags=[TagId(t) for t in g.tags],
                 metadata=g.metadata,
                 criticality=criticality,
                 labels=set(g.labels),
@@ -418,6 +429,218 @@ def _to_tool_associations(
     return associations
 
 
+# ── In-memory stores for per-request RelationalResolver ──────────────────────
+
+
+def _to_relationships(dtos: list[InlineRelationshipDTO]) -> list["Relationship"]:
+    from parlant.core.relationships import (
+        Relationship as _Relationship,
+        RelationshipId as _RelationshipId,
+        RelationshipEntity as _RelationshipEntity,
+        RelationshipEntityKind as _RelationshipEntityKind,
+        RelationshipKind as _RelationshipKind,
+    )
+
+    def _parse_entity(
+        entity_id: str, entity_kind: str
+    ) -> _RelationshipEntity:
+        kind = _RelationshipEntityKind(entity_kind)
+        if kind == _RelationshipEntityKind.TOOL:
+            return _RelationshipEntity(id=ToolId.from_string(entity_id), kind=kind)
+        elif kind == _RelationshipEntityKind.TAG:
+            return _RelationshipEntity(id=TagId(entity_id), kind=kind)
+        else:
+            return _RelationshipEntity(id=GuidelineId(entity_id), kind=kind)
+
+    results = []
+    for dto in dtos:
+        results.append(
+            _Relationship(
+                id=_RelationshipId(dto.id),
+                creation_utc=datetime.now(timezone.utc),
+                source=_parse_entity(dto.source_id, dto.source_kind),
+                target=_parse_entity(dto.target_id, dto.target_kind),
+                kind=_RelationshipKind(dto.kind),
+            )
+        )
+    return results
+
+
+class _InMemoryRelationshipStore:
+    """In-memory RelationshipStore that supports BFS for indirect queries.
+
+    Only implements list_relationships (the only method RelationalResolver calls).
+    Satisfies the RelationshipStore ABC at runtime via duck typing.
+    """
+
+    def __init__(self, relationships: Sequence["Relationship"]) -> None:
+        from parlant.core.relationships import RelationshipKind as _RK
+
+        self._relationships = list(relationships)
+        # Pre-build directed graphs per kind for BFS
+        self._graphs: dict[_RK, dict[str, list[tuple[str, "Relationship"]]]] = {}
+        for r in self._relationships:
+            kind_graph = self._graphs.setdefault(r.kind, {})
+            src = r.source.id_to_string()
+            kind_graph.setdefault(src, []).append((r.target.id_to_string(), r))
+
+    async def list_relationships(
+        self,
+        kind=None,
+        indirect: bool = False,
+        source_id=None,
+        target_id=None,
+    ) -> Sequence["Relationship"]:
+        from parlant.core.relationships import RelationshipKind as _RK
+
+        # No filter — return all (or filtered by kind)
+        if not source_id and not target_id:
+            if kind:
+                return [r for r in self._relationships if r.kind == kind]
+            return list(self._relationships)
+
+        kinds_to_check = [kind] if kind else list(_RK)
+        results: list["Relationship"] = []
+
+        for _kind in kinds_to_check:
+            graph = self._graphs.get(_kind, {})
+
+            if indirect:
+                if source_id:
+                    # BFS forward from source
+                    results.extend(self._bfs_forward(graph, self._id_str(source_id)))
+                if target_id:
+                    # BFS backward to target — build reverse graph
+                    rev = self._reverse_graph(graph)
+                    results.extend(self._bfs_forward(rev, self._id_str(target_id)))
+            else:
+                sid = self._id_str(source_id) if source_id else None
+                tid = self._id_str(target_id) if target_id else None
+                for r in self._relationships:
+                    if r.kind != _kind:
+                        continue
+                    if sid and r.source.id_to_string() != sid:
+                        continue
+                    if tid and r.target.id_to_string() != tid:
+                        continue
+                    results.append(r)
+
+        return results
+
+    @staticmethod
+    def _id_str(entity_id) -> str:
+        if hasattr(entity_id, "to_string"):
+            return entity_id.to_string()
+        return str(entity_id)
+
+    @staticmethod
+    def _bfs_forward(
+        graph: dict[str, list[tuple[str, "Relationship"]]], start: str
+    ) -> list["Relationship"]:
+        visited: set[str] = set()
+        queue = [start]
+        results: list["Relationship"] = []
+        while queue:
+            node = queue.pop(0)
+            if node in visited:
+                continue
+            visited.add(node)
+            for target, rel in graph.get(node, []):
+                results.append(rel)
+                if target not in visited:
+                    queue.append(target)
+        return results
+
+    @staticmethod
+    def _reverse_graph(
+        graph: dict[str, list[tuple[str, "Relationship"]]]
+    ) -> dict[str, list[tuple[str, "Relationship"]]]:
+        rev: dict[str, list[tuple[str, "Relationship"]]] = {}
+        for src, edges in graph.items():
+            for tgt, rel in edges:
+                rev.setdefault(tgt, []).append((src, rel))
+        return rev
+
+    # Stub methods to satisfy ABC (never called by RelationalResolver)
+    async def create_relationship(self, *a, **kw):
+        raise NotImplementedError
+
+    async def read_relationship(self, *a, **kw):
+        raise NotImplementedError
+
+    async def delete_relationship(self, *a, **kw):
+        raise NotImplementedError
+
+
+class _InMemoryGuidelineStore:
+    """In-memory GuidelineStore for per-request RelationalResolver.
+
+    Only implements list_guidelines (the only method RelationalResolver calls).
+    """
+
+    def __init__(self, guidelines: Sequence[Guideline]) -> None:
+        self._guidelines = list(guidelines)
+        # Index: tag_id -> [guideline]
+        self._by_tag: dict[str, list[Guideline]] = {}
+        for g in self._guidelines:
+            for tag in g.tags:
+                self._by_tag.setdefault(str(tag), []).append(g)
+
+    async def list_guidelines(
+        self,
+        tags=None,
+        labels=None,
+    ) -> Sequence[Guideline]:
+        results = self._guidelines
+        if tags:
+            tag_strs = {str(t) for t in tags}
+            matched: list[Guideline] = []
+            seen: set[str] = set()
+            for tag_str in tag_strs:
+                for g in self._by_tag.get(tag_str, []):
+                    if str(g.id) not in seen:
+                        seen.add(str(g.id))
+                        matched.append(g)
+            results = matched
+        if labels:
+            results = [g for g in results if g.labels & labels]
+        return results
+
+    # Stub methods to satisfy ABC (never called by RelationalResolver)
+    async def create_guideline(self, *a, **kw):
+        raise NotImplementedError
+
+    async def read_guideline(self, *a, **kw):
+        raise NotImplementedError
+
+    async def delete_guideline(self, *a, **kw):
+        raise NotImplementedError
+
+    async def update_guideline(self, *a, **kw):
+        raise NotImplementedError
+
+    async def find_guideline(self, *a, **kw):
+        raise NotImplementedError
+
+    async def upsert_tag(self, *a, **kw):
+        raise NotImplementedError
+
+    async def remove_tag(self, *a, **kw):
+        raise NotImplementedError
+
+    async def set_metadata(self, *a, **kw):
+        raise NotImplementedError
+
+    async def unset_metadata(self, *a, **kw):
+        raise NotImplementedError
+
+    async def upsert_labels(self, *a, **kw):
+        raise NotImplementedError
+
+    async def remove_labels(self, *a, **kw):
+        raise NotImplementedError
+
+
 # ── Router factory ────────────────────────────────────────────────────────────
 
 
@@ -427,7 +650,6 @@ def create_router(
     meter: Meter,
     websocket_logger: WebSocketLogger,
     guideline_matcher: GuidelineMatcher,
-    relational_resolver: RelationalResolver,
     tool_event_generator: ToolEventGenerator,
     message_generator: MessageGenerator,
     canned_response_generator: CannedResponseGenerator,
@@ -447,6 +669,7 @@ def create_router(
         customer = _to_customer(request.customer)
         history_events = _to_events(request.history)
         guidelines = _to_guidelines(request.guidelines)
+        relationships = _to_relationships(request.relationships)
         terms = _to_terms(request.terms)
         canned_responses = _to_canned_responses(request.canned_responses)
         context_variables, cv_values = _to_context_variables(request.context_variables)
@@ -530,7 +753,15 @@ def create_router(
         sink_id = f"v2_{session_id}"
         websocket_logger.register_sse_sink(sink_id, sse_emitter._queue)
 
-        # 8. Create per-request engine with in-memory backing
+        # 8. Build per-request RelationalResolver with in-memory stores
+        relational_resolver = RelationalResolver(
+            relationship_store=_InMemoryRelationshipStore(relationships),
+            guideline_store=_InMemoryGuidelineStore(guidelines),
+            logger=logger,
+            tracer=tracer,
+        )
+
+        # 9. Create per-request engine with in-memory backing
         engine = AlphaEngine(
             logger=logger,
             tracer=tracer,
@@ -546,7 +777,7 @@ def create_router(
             hooks=hooks,
         )
 
-        # 9. Run engine in background task
+        # 10. Run engine in background task
         context = Context(session_id=session_id, agent_id=agent.id)
 
         logger.info(

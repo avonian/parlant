@@ -60,7 +60,6 @@ from parlant.core.engines.alpha.guideline_matching.guideline_matcher import Guid
 from parlant.core.engines.alpha.hooks import EngineHooks
 from parlant.core.engines.alpha.message_generator import MessageGenerator
 from parlant.core.engines.alpha.perceived_performance_policy import PerceivedPerformancePolicyProvider
-from parlant.core.engines.alpha.relational_resolver import RelationalResolver
 from parlant.core.engines.alpha.tool_event_generator import ToolEventGenerator
 from parlant.core.version import VERSION
 from parlant.core.meter import Meter
@@ -151,7 +150,6 @@ async def create_api_app(
     journey_guideline_projection = container[JourneyGuidelineProjection]
 
     guideline_matcher = container[GuidelineMatcher]
-    relational_resolver = container[RelationalResolver]
     tool_event_generator = container[ToolEventGenerator]
     fluid_message_generator = container[MessageGenerator]
     canned_response_gen = container[CannedResponseGenerator]
@@ -491,7 +489,6 @@ async def create_api_app(
             meter=meter,
             websocket_logger=websocket_logger,
             guideline_matcher=guideline_matcher,
-            relational_resolver=relational_resolver,
             tool_event_generator=tool_event_generator,
             message_generator=fluid_message_generator,
             canned_response_generator=canned_response_gen,

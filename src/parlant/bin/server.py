@@ -645,7 +645,8 @@ async def setup_container() -> AsyncIterator[Container]:
     _define_singleton(c, ToolCallBatcher, DefaultToolCallBatcher)
     _define_singleton(c, ToolCaller, ToolCaller)
 
-    _define_singleton(c, RelationalResolver, RelationalResolver)
+    # RelationalResolver is no longer a container singleton — it's built per-request
+    # in v2_process.py with in-memory stores populated from the request payload.
 
     _define_singleton(
         c,

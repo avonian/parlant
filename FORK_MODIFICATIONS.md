@@ -251,6 +251,45 @@ Base upstream version at time of consolidation: v3.2.0 (upstream/develop @ 34068
 
 ---
 
+## 13. Per-Request RelationalResolver with In-Memory Stores
+
+**Purpose:** Eliminate `/v2/process`'s runtime dependency on Parlant's persistent `GuidelineStore` and `RelationshipStore`. Previously, `RelationalResolver` was a container singleton that read from PostgreSQL at request time to resolve guideline dependencies, priorities, and entailments. Now it is built per-request from inline data sent by nForce, making `/v2/process` fully stateless.
+
+**Files modified:**
+- `src/parlant/api/v2_process.py`:
+  - Added `InlineRelationshipDTO` (source/target ID + kind) and `relationships` field to `ProcessRequestDTO`
+  - Added `tags` field to `InlineGuidelineDTO` (for tag-based relationship resolution)
+  - Added `_to_relationships()` converter (DTO → domain `Relationship` objects)
+  - Added `_InMemoryRelationshipStore` — in-memory `RelationshipStore` implementation with BFS graph traversal for `indirect=True` queries (transitive dependency/priority/entailment chains). Builds per-kind directed graphs at construction; supports forward BFS (source_id) and reverse BFS (target_id)
+  - Added `_InMemoryGuidelineStore` — in-memory `GuidelineStore` implementation with tag-based filtering. Indexes guidelines by tag at construction for efficient `list_guidelines(tags=[...])` lookups
+  - `RelationalResolver` is now constructed per-request inside the `process()` handler using the in-memory stores, instead of being received as a `create_router()` parameter
+  - `_to_guidelines()` now populates `Guideline.tags` from the request payload (previously hardcoded to `[]`)
+  - Removed `relational_resolver` from `create_router()` signature
+- `src/parlant/api/app.py` — Removed `relational_resolver` parameter from `v2_process.create_router()` call; removed `RelationalResolver` import
+- `src/parlant/bin/server.py` — Removed `RelationalResolver` singleton from lagom container (`_define_singleton` call)
+
+**Key decisions:**
+- `_InMemoryRelationshipStore` replicates the BFS traversal logic from `RelationshipDocumentStore` (which uses networkx) using a simple queue-based BFS over adjacency lists — no external dependency needed
+- Both in-memory stores implement only the methods actually called by `RelationalResolver` (`list_relationships`, `list_guidelines`); all other ABC methods raise `NotImplementedError`
+- nForce sends source-level relationships (ID-based, including tag-targeted relationships) rather than pre-expanded guideline-to-guideline pairs, preserving `RelationalResolver`'s existing resolution algorithm
+- The persistent stores are no longer registered in `nforce_server.py` (see §14); the transient in-memory defaults satisfy the DI chain
+
+---
+
+## 14. Stateless nforce_server.py — No PostgreSQL Required
+
+**Purpose:** Eliminate Parlant's PostgreSQL dependency entirely when running under nForce. All entity data is sent inline with each `/v2/process` request, so persistent stores are unnecessary.
+
+**Files modified:**
+- `nforce_server.py` — Stripped from 237 lines to ~50. Removed `POSTGRES_CONNECTION_STRING` requirement, `configure_stores` callback (which overrode 16 transient stores with PostgreSQL/pgvector implementations), `AsyncExitStack`, and nForce plugin registration. Server now boots with `NLPServices.litellm` only — transient in-memory store defaults from `server.py` satisfy the DI container. The orphaned CRUD routers in `app.py` still mount against these empty transient stores (harmless, never called by nForce).
+
+**Key decisions:**
+- The transient stores are never read at runtime via `/v2/process` — all data comes inline from nForce
+- CRUD routers remain mounted (removing them would require refactoring `app.py`'s `create_api_app`), but they operate on empty ephemeral stores
+- Only `LITELLM_PROVIDER_MODEL_NAME` is required to boot
+
+---
+
 ## Merge Strategy
 
 When pulling upstream updates:
@@ -268,4 +307,4 @@ Areas most likely to conflict:
 5. **`litellm_service.py`** — Overlapping fixes with upstream
 6. **`tool_caller.py`** — Simple agent tool calling additions
 
-Note: §12 adds the `/v2/process` endpoint and modifies `app.py`/`server.py`. Upstream CRUD routers are kept intact — conflicts are unlikely unless upstream restructures the middleware stack or uvicorn config.
+Note: §12–14 make `/v2/process` fully stateless and eliminate PostgreSQL from `nforce_server.py`. Upstream CRUD routers are kept intact but run against empty transient stores. Conflicts are unlikely unless upstream restructures the middleware stack, uvicorn config, or `RelationalResolver` wiring.
