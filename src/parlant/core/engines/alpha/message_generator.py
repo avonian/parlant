@@ -55,6 +55,7 @@ from parlant.core.sessions import (
     EventSource,
     Session,
 )
+from pydantic import field_validator
 from parlant.core.common import DefaultBaseModel
 from parlant.core.loggers import Logger
 from parlant.core.shots import Shot, ShotCollection
@@ -121,6 +122,17 @@ class MessageSchema(DefaultBaseModel):
     insights: Optional[list[str]] = None
     evaluation_for_each_instruction: Optional[list[InstructionEvaluation]] = None
     revisions: Optional[list[Revision]] = None
+
+    @field_validator("insights", mode="before")
+    @classmethod
+    def coerce_insights(cls, v: Any) -> Any:
+        """GPT-5 sometimes returns insights as objects instead of strings."""
+        if isinstance(v, list):
+            return [
+                item.get("insight", str(item)) if isinstance(item, dict) else item
+                for item in v
+            ]
+        return v
 
 
 @dataclass

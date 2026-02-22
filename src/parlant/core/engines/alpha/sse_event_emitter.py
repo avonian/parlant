@@ -9,6 +9,7 @@ read them back (e.g., to check staged tool events).
 
 import asyncio
 import json
+from dataclasses import asdict
 from typing import Any, AsyncIterator, Mapping, cast
 
 from typing_extensions import override
@@ -208,7 +209,23 @@ class SSEEventEmitter(EventEmitter):
             event_type = item.kind.value  # "status", "message", "tool", "custom"
             event_data = _serialize_emitted_event(item)
 
-            yield f"event: {event_type}\ndata: {json.dumps(event_data)}\n\n"
+            yield f"event: {event_type}\ndata: {json.dumps(event_data, default=_json_safe)}\n\n"
+
+
+def _json_safe(obj: object) -> object:
+    """Fallback serializer for json.dumps — handles Pydantic models, dataclasses, etc."""
+    # Pydantic models (e.g., Langflow Data objects)
+    if hasattr(obj, "model_dump"):
+        try:
+            return obj.model_dump(mode="json")  # type: ignore[union-attr]
+        except Exception:
+            pass
+    # dataclasses
+    try:
+        return asdict(obj)  # type: ignore[arg-type]
+    except (TypeError, AttributeError):
+        pass
+    return str(obj)
 
 
 def _serialize_emitted_event(event: EmittedEvent) -> dict[str, Any]:

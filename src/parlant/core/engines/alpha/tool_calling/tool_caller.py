@@ -346,8 +346,17 @@ class ToolCaller:
                     tool_call.arguments,
                 )
 
+                # Log just the useful data payload, unwrapping Langflow tuple if present
+                log_data = result.data
+                if isinstance(log_data, (list, tuple)) and len(log_data) >= 1:
+                    first = log_data[0]
+                    if isinstance(first, dict) and "data" in first:
+                        log_data = first["data"]
+                    else:
+                        log_data = first
+
                 self._logger.debug(
-                    f"Execution::Result: Tool call succeeded ({tool_call.tool_id.to_string()}/{tool_call.id})\n{json.dumps(asdict(result), indent=2, default=str)}"
+                    f"Execution::Result: Tool call succeeded ({tool_call.tool_id.to_string()}/{tool_call.id})\n{json.dumps(log_data, indent=2, default=str)}"
                 )
             except Exception as exc:
                 self._logger.error(

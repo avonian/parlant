@@ -1273,6 +1273,11 @@ OUTPUT FORMAT:
 
                 for param_name, param_value in (tc.args or {}).items():
                     if param_name in tool.parameters:
+                        # Skip None / "None" values for optional params so they
+                        # aren't sent to tool services as the literal string "None".
+                        if param_value is None or param_value == "None":
+                            if param_name not in tool.required:
+                                continue
                         arguments[param_name] = param_value
 
                 # Check if all required parameters are present

@@ -36,7 +36,7 @@ from parlant.core.engines.alpha.in_memory_session_store import InMemorySessionSt
 from parlant.core.engines.alpha.message_generator import MessageGenerator
 from parlant.core.engines.alpha.perceived_performance_policy import PerceivedPerformancePolicyProvider
 from parlant.core.engines.alpha.relational_resolver import RelationalResolver
-from parlant.core.engines.alpha.sse_event_emitter import SSEEventEmitter, _SENTINEL, _serialize_emitted_event
+from parlant.core.engines.alpha.sse_event_emitter import SSEEventEmitter, _SENTINEL, _serialize_emitted_event, _json_safe
 from parlant.core.engines.alpha.tool_calling.tool_caller import ToolCallBatcher, ToolCaller
 from parlant.core.engines.alpha.tool_event_generator import ToolEventGenerator
 from parlant.core.engines.types import Context
@@ -952,7 +952,7 @@ def create_router(
 
                     event_type = item.kind.value
                     event_data = _serialize_emitted_event(item)
-                    yield f"event: {event_type}\ndata: {json.dumps(event_data)}\n\n"
+                    yield f"event: {event_type}\ndata: {json.dumps(event_data, default=_json_safe)}\n\n"
 
             except asyncio.CancelledError:
                 logger.warning("v2/process: event_stream cancelled by client disconnect")

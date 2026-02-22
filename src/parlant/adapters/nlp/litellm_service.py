@@ -25,6 +25,10 @@ import tiktoken
 
 import litellm
 
+# Allow LiteLLM to silently drop unsupported params (e.g. temperature for GPT-5)
+# rather than raising UnsupportedParamsError.
+litellm.drop_params = True
+
 from parlant.adapters.nlp.common import normalize_json_output, record_llm_metrics
 from parlant.adapters.nlp.hugging_face import JinaAIEmbedder
 from parlant.core.engines.alpha.prompt_builder import PromptBuilder
