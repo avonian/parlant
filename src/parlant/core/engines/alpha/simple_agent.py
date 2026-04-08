@@ -136,6 +136,12 @@ def tool_to_openai_schema(tool: Tool) -> dict[str, Any]:
         if "enum" in descriptor:
             param_schema["enum"] = descriptor["enum"]
 
+        # Array parameters require an items schema for OpenAI
+        if param_schema.get("type") == "array":
+            item_type = descriptor.get("item_type", "string")
+            mapped_item_type = type_mapping.get(item_type, "string") if isinstance(item_type, str) else "string"
+            param_schema["items"] = {"type": mapped_item_type}
+
         properties[param_name] = param_schema
 
     required = list(tool.required) if tool.required else []
