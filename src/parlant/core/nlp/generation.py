@@ -283,10 +283,12 @@ class BaseSchematicGenerator(SchematicGenerator[T]):
     ) -> SchematicGenerationResult[T]:
         assert _REQUEST_DURATION_HISTOGRAM is not None
 
+        effective_model_name = hints.get("model_name") or self.model_name
+
         async with _REQUEST_DURATION_HISTOGRAM.measure(
             {
                 "class.name": self.__class__.__qualname__,
-                "model.name": self.model_name,
+                "model.name": effective_model_name,
                 "schema.name": self.schema.__name__,
             }
         ):
@@ -298,7 +300,7 @@ class BaseSchematicGenerator(SchematicGenerator[T]):
                 self.tracer.add_event(
                     "gen.request_failed",
                     attributes={
-                        "model.name": self.model_name,
+                        "model.name": effective_model_name,
                         "schema.name": self.schema.__name__,
                         "duration": start.elapsed,
                     },
@@ -308,7 +310,7 @@ class BaseSchematicGenerator(SchematicGenerator[T]):
                 self.tracer.add_event(
                     "gen.request_completed",
                     attributes={
-                        "model.name": self.model_name,
+                        "model.name": effective_model_name,
                         "schema.name": self.schema.__name__,
                         "duration": start.elapsed,
                     },

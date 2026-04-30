@@ -290,6 +290,19 @@ Base upstream version at time of consolidation: v3.2.0 (upstream/develop @ 34068
 
 ---
 
+## 15. Honest Per-Request Model Reporting in Generation Metrics
+
+**Purpose:** Report the actual model used per request in the `gen` histogram and `gen.request_*` trace events, instead of always showing the env-var default (`LITELLM_PROVIDER_MODEL_NAME`). Without this, `model.name` in traces shows the fallback model even when an agent's `model_name` override is in effect — making it impossible to tell from logs which model actually served a turn.
+
+**Files modified:**
+- `src/parlant/core/nlp/generation.py` — In `BaseSchematicGenerator.generate()`, resolve `effective_model_name = hints.get("model_name") or self.model_name` once at entry and use it for the histogram label, `gen.request_failed` event, and `gen.request_completed` event.
+
+**Key decisions:**
+- Falls through to `self.model_name` when no hint is set, preserving behavior for adapters that don't pass an override
+- Only the metric/trace attributes change; no engine behavior is affected
+
+---
+
 ## Merge Strategy
 
 When pulling upstream updates:
@@ -306,5 +319,6 @@ Areas most likely to conflict:
 4. **`sdk.py`** — Extended SDK for playbooks, simple agent, test suites
 5. **`litellm_service.py`** — Overlapping fixes with upstream
 6. **`tool_caller.py`** — Simple agent tool calling additions
+7. **`core/nlp/generation.py`** — `BaseSchematicGenerator.generate()` per-request model reporting (§15)
 
 Note: §12–14 make `/v2/process` fully stateless and eliminate PostgreSQL from `nforce_server.py`. Upstream CRUD routers are kept intact but run against empty transient stores. Conflicts are unlikely unless upstream restructures the middleware stack, uvicorn config, or `RelationalResolver` wiring.
