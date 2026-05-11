@@ -7,6 +7,7 @@ history, etc.) and streams back SSE events. No pre-synced state required.
 
 import asyncio
 import json
+import os
 import traceback
 from datetime import datetime, timezone
 from typing import Any, Optional, Sequence
@@ -713,6 +714,17 @@ def create_router(
         response_class=StreamingResponse,
     )
     async def process(request: ProcessRequestDTO) -> StreamingResponse:
+        # Per-request latency waterfall — every milestone records ms
+        # since request entry; logged as `v2_process_timings` once the
+        # engine finishes its first yield + once at the end.
+        import time as _time
+
+        _t0 = _time.monotonic()
+        _v2_timings: dict[str, int] = {}
+
+        def _v2_mark(label: str) -> None:
+            _v2_timings[label] = int((_time.monotonic() - _t0) * 1000)
+
         # 1. Convert DTOs → domain objects
         agent = _to_agent(request.agent)
         customer = _to_customer(request.customer)
@@ -724,6 +736,7 @@ def create_router(
         context_variables, cv_values = _to_context_variables(request.context_variables)
         tool_services = _to_tools(request.tools)
         tool_associations = _to_tool_associations(request.guidelines)
+        _v2_mark("dto_to_domain")
 
         # 2. Build ephemeral session
         session_id = SessionId(generate_id())
@@ -838,6 +851,8 @@ def create_router(
         sink_id = f"v2_{session_id}"
         websocket_logger.register_sse_sink(sink_id, sse_emitter._queue)
 
+        _v2_mark("entity_queries_built")
+
         # 8. Build per-request RelationalResolver with in-memory stores
         relational_resolver = RelationalResolver(
             relationship_store=_InMemoryRelationshipStore(relationships),
@@ -881,6 +896,7 @@ def create_router(
 
         # 10. Run engine in background task
         context = Context(session_id=session_id, agent_id=agent.id)
+        _v2_mark("engine_ready")
 
         logger.info(
             f"v2/process: starting engine — agent={agent.id}, "
@@ -891,7 +907,13 @@ def create_router(
         async def run_engine() -> None:
             try:
                 await engine.process(context, sse_emitter)
-                logger.info(f"v2/process: engine completed for session {session_id}")
+                _v2_mark("engine_complete")
+                if os.environ.get("LATENCY_TRACE") == "true":
+                    logger.info(
+                        f"v2/process: engine completed for session {session_id} | timings={_v2_timings}"
+                    )
+                else:
+                    logger.info(f"v2/process: engine completed for session {session_id}")
             except Exception as exc:
                 logger.error(f"v2/process engine error: {traceback.format_exception(exc)}")
                 # Emit error as SSE event
@@ -928,6 +950,8 @@ def create_router(
             yield ": stream-start\n\n"
 
             task = asyncio.create_task(run_engine())
+            _first_engine_event_seen = False
+            _first_message_event_seen = False
             try:
                 # Use a timeout on queue reads so we can send SSE keepalive comments.
                 # Without this, the HTTP connection may idle-timeout during long engine runs.
@@ -949,6 +973,16 @@ def create_router(
 
                     if not isinstance(item, EmittedEvent):
                         continue
+
+                    if not _first_engine_event_seen:
+                        _first_engine_event_seen = True
+                        _v2_mark("first_engine_event")
+                    if (
+                        not _first_message_event_seen
+                        and item.kind.value == "message"
+                    ):
+                        _first_message_event_seen = True
+                        _v2_mark("first_message_event")
 
                     event_type = item.kind.value
                     event_data = _serialize_emitted_event(item)
