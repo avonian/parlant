@@ -4910,13 +4910,23 @@ class Server:
             for interface, implementation in [
                 (AgentStore, AgentDocumentStore),
                 (TagStore, TagDocumentStore),
-                (GuidelineStore, GuidelineDocumentStore),
                 (GuidelineToolAssociationStore, GuidelineToolAssociationDocumentStore),
                 (RelationshipStore, RelationshipDocumentStore),
             ]:
                 c()[interface] = await self._exit_stack.enter_async_context(
                     implementation(c()[IdGenerator], TransientDocumentDatabase())  #  type: ignore
                 )
+
+            # GuidelineStore: wrap the transient store so that in stateless /v2/process the
+            # request-inline guidelines are resolvable by id (e.g. journey node selection
+            # reading a journey's condition guidelines). Transparent when no inline guidelines
+            # are set for the current request.
+            from parlant.api.inline_guideline_store import InlineAwareGuidelineStore
+
+            _guideline_doc_store = await self._exit_stack.enter_async_context(
+                GuidelineDocumentStore(c()[IdGenerator], TransientDocumentDatabase())
+            )
+            c()[GuidelineStore] = InlineAwareGuidelineStore(_guideline_doc_store)
 
             c()[EvaluationStore] = await self._exit_stack.enter_async_context(
                 EvaluationDocumentStore(TransientDocumentDatabase())

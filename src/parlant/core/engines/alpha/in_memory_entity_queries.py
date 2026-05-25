@@ -7,7 +7,7 @@ feeds it inline data so the engine runs without modification.
 """
 
 from datetime import datetime, timezone
-from typing import Mapping, Optional, Sequence
+from typing import TYPE_CHECKING, Mapping, Optional, Sequence
 
 from parlant.core.agents import Agent, AgentId, CompositionMode
 from parlant.core.capabilities import Capability
@@ -25,6 +25,37 @@ from parlant.core.guideline_tool_associations import (
 from parlant.core.journeys import Journey, JourneyNodeId
 from parlant.core.sessions import Event, Session, SessionId, SessionStore
 from parlant.core.tools import ToolId, ToolService
+
+if TYPE_CHECKING:
+    from parlant.core.journeys import JourneyStore
+    from parlant.core.journey_guideline_projection import JourneyGuidelineProjection
+
+
+def _attach_reachable_follow_ups(projected: Sequence[Guideline]) -> None:
+    """Populate each journey-node guideline's `reachable_follow_ups` so the engine's
+    next-step selector can branch. Each entry is {path: [target node index], condition}.
+
+    Normally computed by the offline journey-reachability indexing service, which the
+    stateless inline path skips. This derives them directly from the projected follow-ups,
+    which covers direct forks (it does not expand multi-hop reachability through
+    intermediate no-condition nodes).
+    """
+    by_id = {g.id: g for g in projected}
+    for g in projected:
+        journey_node = g.metadata.get("journey_node")
+        if not isinstance(journey_node, dict):
+            continue
+        reachable: list[dict[str, object]] = []
+        for follow_up_id in journey_node.get("follow_ups", []) or []:
+            target = by_id.get(follow_up_id)
+            if target is None:
+                continue
+            target_node = target.metadata.get("journey_node", {}) or {}
+            index = target_node.get("index")
+            if index is None:
+                continue
+            reachable.append({"path": [index], "condition": target.content.condition or ""})
+        journey_node["reachable_follow_ups"] = reachable
 
 
 class InMemoryEntityQueries:
@@ -49,6 +80,9 @@ class InMemoryEntityQueries:
         tool_associations: Sequence[GuidelineToolAssociation],
         tool_service: ToolService,
         canned_responses: Sequence[CannedResponse],
+        journeys: Sequence[Journey] = (),
+        journey_store: "JourneyStore | None" = None,
+        journey_guideline_projection: "JourneyGuidelineProjection | None" = None,
     ) -> None:
         self._agent = agent
         self._customer = customer
@@ -61,6 +95,9 @@ class InMemoryEntityQueries:
         self._tool_associations = tool_associations
         self._tool_service = tool_service
         self._canned_responses = canned_responses
+        self._journeys = list(journeys)
+        self._journey_store = journey_store
+        self._journey_guideline_projection = journey_guideline_projection
 
         # Cache for guideline_and_journeys_it_depends_on (engine accesses this attribute)
         from cachetools import TTLCache
@@ -92,7 +129,26 @@ class InMemoryEntityQueries:
         journeys: Sequence[Journey],
         static_playbook_id: Optional[str] = None,
     ) -> Sequence[Guideline]:
-        return self._guidelines
+        # No journeys to project (or projection unavailable): return inline guidelines as-is.
+        # This keeps behaviour unchanged until NForce sends inline journeys.
+        if not self._journey_guideline_projection or not journeys:
+            return self._guidelines
+
+        # Project journeys to guidelines here (the engine's canonical behaviour), replacing
+        # any pre-projected journey_node guidelines that may still arrive inline.
+        merged: dict[GuidelineId, Guideline] = {
+            g.id: g for g in self._guidelines if not str(g.id).startswith("journey_node:")
+        }
+        for journey in journeys:
+            if not journey.conditions:  # No conditions => journey can't activate => skip.
+                continue
+            projected = await self._journey_guideline_projection.project_journey_to_guidelines(
+                journey.id
+            )
+            _attach_reachable_follow_ups(projected)
+            for g in projected:
+                merged[g.id] = g
+        return list(merged.values())
 
     async def find_context_variables_for_context(
         self,
@@ -114,7 +170,10 @@ class InMemoryEntityQueries:
     async def find_journey_node_tool_associations(
         self, node_id: JourneyNodeId
     ) -> Sequence[ToolId]:
-        return []
+        if self._journey_store is None:
+            return []
+        node = await self._journey_store.read_node(node_id)
+        return list(node.tools)
 
     async def find_glossary_terms_for_context(
         self,
@@ -132,7 +191,7 @@ class InMemoryEntityQueries:
         agent_id: AgentId,
         static_playbook_id: Optional[str] = None,
     ) -> Sequence[Journey]:
-        return []
+        return list(self._journeys)
 
     async def sort_journeys_by_contextual_relevance(
         self,
@@ -168,7 +227,14 @@ class InMemoryEntityQueries:
         self,
         journey: Journey,
     ) -> Sequence[GuidelineId]:
-        return []
+        if self._journey_guideline_projection is None:
+            return []
+        return [
+            g.id
+            for g in await self._journey_guideline_projection.project_journey_to_guidelines(
+                journey.id
+            )
+        ]
 
     async def find_guidelines_that_need_reevaluation(
         self,

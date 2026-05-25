@@ -44,6 +44,16 @@ from parlant.core.engines.types import Context
 from parlant.core.entity_cq import EntityCommands
 from parlant.core.glossary import Term, TermId
 from parlant.core.guidelines import Guideline, GuidelineContent, GuidelineId
+from parlant.core.journeys import (
+    Journey,
+    JourneyEdge,
+    JourneyEdgeId,
+    JourneyId,
+    JourneyNode,
+    JourneyNodeId,
+)
+from parlant.core.journey_guideline_projection import JourneyGuidelineProjection
+from parlant.api.inline_guideline_store import set_inline_guidelines
 from parlant.core.guideline_tool_associations import (
     GuidelineToolAssociation,
     GuidelineToolAssociationId,
@@ -168,6 +178,35 @@ class InlineRelationshipDTO(BaseModel):
     kind: str  # "entailment", "priority", "dependency", etc.
 
 
+class InlineJourneyNodeDTO(BaseModel):
+    id: str
+    action: str | None = None
+    description: str | None = None
+    tools: list[str] = Field(default_factory=list)  # "service:tool" ids
+    composition_mode: str | None = None
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class InlineJourneyEdgeDTO(BaseModel):
+    id: str
+    source: str
+    target: str
+    condition: str | None = None
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class InlineJourneyDTO(BaseModel):
+    id: str
+    title: str = ""
+    description: str = ""
+    conditions: list[str] = Field(default_factory=list)  # trigger guideline ids
+    root_id: str | None = None  # entry node; inferred if absent
+    composition_mode: str | None = None
+    tags: list[str] = Field(default_factory=list)
+    nodes: list[InlineJourneyNodeDTO] = Field(default_factory=list)
+    edges: list[InlineJourneyEdgeDTO] = Field(default_factory=list)
+
+
 class EngineStateDTO(BaseModel):
     applied_guideline_ids: list[str] = Field(default_factory=list)
     journey_paths: dict[str, list[str | None]] = Field(default_factory=dict)
@@ -179,6 +218,7 @@ class ProcessRequestDTO(BaseModel):
     history: list[HistoryEventDTO] = Field(default_factory=list)
     guidelines: list[InlineGuidelineDTO] = Field(default_factory=list)
     relationships: list[InlineRelationshipDTO] = Field(default_factory=list)
+    journeys: list[InlineJourneyDTO] = Field(default_factory=list)
     terms: list[InlineTermDTO] = Field(default_factory=list)
     canned_responses: list[InlineCannedResponseDTO] = Field(default_factory=list)
     context_variables: list[InlineContextVariableDTO] = Field(default_factory=list)
@@ -646,6 +686,139 @@ class _InMemoryGuidelineStore:
         raise NotImplementedError
 
 
+def _parse_composition_mode(value: str | None) -> CompositionMode | None:
+    if not value:
+        return None
+    try:
+        return CompositionMode(value)
+    except ValueError:
+        return None
+
+
+class _InMemoryJourneyStore:
+    """In-memory JourneyStore for the stateless engine.
+
+    Parses inline journey DTOs into domain objects and serves the read methods
+    the engine + JourneyGuidelineProjection call (read_journey, list_journeys,
+    list_nodes, list_edges, read_node, read_edge, find_relevant_journeys).
+    Duck-typed against the JourneyStore ABC; mutation methods are never called
+    during stateless processing.
+    """
+
+    def __init__(self, dtos: Sequence[InlineJourneyDTO]) -> None:
+        self._journeys: list[Journey] = []
+        self._nodes_by_id: dict[JourneyNodeId, JourneyNode] = {}
+        self._nodes_by_journey: dict[JourneyId, list[JourneyNode]] = {}
+        self._edges_by_id: dict[JourneyEdgeId, JourneyEdge] = {}
+        self._edges_by_journey: dict[JourneyId, list[JourneyEdge]] = {}
+
+        now = datetime.now(timezone.utc)
+
+        for dto in dtos:
+            jid = JourneyId(dto.id)
+
+            nodes: list[JourneyNode] = []
+            for n in dto.nodes:
+                node = JourneyNode(
+                    id=JourneyNodeId(n.id),
+                    creation_utc=now,
+                    action=n.action,
+                    tools=[ToolId.from_string(t) for t in n.tools],
+                    metadata=dict(n.metadata),
+                    description=n.description,
+                    composition_mode=_parse_composition_mode(n.composition_mode),
+                )
+                nodes.append(node)
+                self._nodes_by_id[node.id] = node
+            self._nodes_by_journey[jid] = nodes
+
+            edges: list[JourneyEdge] = []
+            for e in dto.edges:
+                edge = JourneyEdge(
+                    id=JourneyEdgeId(e.id),
+                    creation_utc=now,
+                    source=JourneyNodeId(e.source),
+                    target=JourneyNodeId(e.target),
+                    condition=e.condition,
+                    metadata=dict(e.metadata),
+                )
+                edges.append(edge)
+                self._edges_by_id[edge.id] = edge
+            self._edges_by_journey[jid] = edges
+
+            # Root: explicit if given, else the node with no incoming edge, else first node.
+            root_id = dto.root_id
+            if not root_id:
+                targeted = {str(e.target) for e in edges}
+                root = next(
+                    (n for n in nodes if str(n.id) not in targeted),
+                    nodes[0] if nodes else None,
+                )
+                root_id = str(root.id) if root else ""
+
+            self._journeys.append(
+                Journey(
+                    id=jid,
+                    creation_utc=now,
+                    description=dto.description,
+                    conditions=[GuidelineId(c) for c in dto.conditions],
+                    title=dto.title,
+                    root_id=JourneyNodeId(root_id),
+                    tags=[TagId(t) for t in dto.tags],
+                    composition_mode=_parse_composition_mode(dto.composition_mode),
+                )
+            )
+
+    @property
+    def journeys(self) -> list[Journey]:
+        return list(self._journeys)
+
+    def _not_found(self, item_id: str):
+        from parlant.core.common import ItemNotFoundError, UniqueId
+
+        return ItemNotFoundError(item_id=UniqueId(item_id))
+
+    async def read_journey(self, journey_id: JourneyId) -> Journey:
+        for j in self._journeys:
+            if j.id == journey_id:
+                return j
+        raise self._not_found(str(journey_id))
+
+    async def list_journeys(self, tags=None, condition=None) -> Sequence[Journey]:
+        return list(self._journeys)
+
+    async def list_nodes(self, journey_id: JourneyId) -> Sequence[JourneyNode]:
+        return list(self._nodes_by_journey.get(journey_id, []))
+
+    async def list_edges(
+        self, journey_id: JourneyId, node_id: JourneyNodeId | None = None
+    ) -> Sequence[JourneyEdge]:
+        edges = self._edges_by_journey.get(journey_id, [])
+        if node_id is not None:
+            return [e for e in edges if e.source == node_id]
+        return list(edges)
+
+    async def read_node(self, node_id: JourneyNodeId) -> JourneyNode:
+        node = self._nodes_by_id.get(node_id)
+        if node is None:
+            raise self._not_found(str(node_id))
+        return node
+
+    async def read_edge(self, edge_id: JourneyEdgeId) -> JourneyEdge:
+        edge = self._edges_by_id.get(edge_id)
+        if edge is None:
+            raise self._not_found(str(edge_id))
+        return edge
+
+    async def find_relevant_journeys(
+        self,
+        query: str,
+        available_journeys: Sequence[Journey],
+        max_journeys: int = 5,
+    ) -> Sequence[Journey]:
+        return list(available_journeys)[:max_journeys]
+
+
 # ── Inline service registry for per-request tool resolution ──────────────────
 
 
@@ -736,6 +909,14 @@ def create_router(
         context_variables, cv_values = _to_context_variables(request.context_variables)
         tool_services = _to_tools(request.tools)
         tool_associations = _to_tool_associations(request.guidelines)
+        # Make inline guidelines resolvable by id for code paths that read the container
+        # GuidelineStore directly (e.g. journey node selection reading journey conditions).
+        set_inline_guidelines(guidelines)
+        journey_store = _InMemoryJourneyStore(request.journeys)
+        journey_guideline_projection = JourneyGuidelineProjection(
+            journey_store=journey_store,
+            guideline_store=_InMemoryGuidelineStore(guidelines),
+        )
         _v2_mark("dto_to_domain")
 
         # 2. Build ephemeral session
@@ -831,6 +1012,9 @@ def create_router(
             tool_associations=tool_associations,
             tool_service=fallback_service,
             canned_responses=canned_responses,
+            journeys=journey_store.journeys,
+            journey_store=journey_store,
+            journey_guideline_projection=journey_guideline_projection,
         )
 
         # 6. Build entity commands (backed by in-memory session store)
