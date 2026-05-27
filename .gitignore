@@ -24,3 +24,7 @@ scripts/fern/openapi
 fern.generate.log
 schematic_generation_test_cache.json
 test_timing.csv
+
+# Runtime-learned models that reject the `temperature` param (litellm_service.py)
+.litellm_temperature_quirks.json
+.litellm_temperature_quirks.json.tmp

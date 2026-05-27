@@ -29,6 +29,48 @@ import litellm
 # rather than raising UnsupportedParamsError.
 litellm.drop_params = True
 
+# Some models have deprecated the `temperature` parameter outright and return a
+# 400 if it's sent (e.g. newer Claude like Opus 4.7). litellm.drop_params only
+# strips params it *knows* are unsupported, which lags behind new deprecations.
+# We learn these at runtime: on a temperature-related 400 we drop temperature,
+# retry, and remember the model so subsequent requests skip it. This keeps the
+# (low) temperature where the model honours it, and stays compatible where it
+# doesn't — no hardcoded model list to maintain.
+#
+# The learned set is persisted to a gitignored JSON so a model is only ever
+# learned once (the first request after a fresh deploy), not once per restart.
+_QUIRKS_PATH = os.environ.get(
+    "LITELLM_TEMPERATURE_QUIRKS_PATH", ".litellm_temperature_quirks.json"
+)
+
+
+def _load_temperature_rejecting_models() -> set[str]:
+    try:
+        with open(_QUIRKS_PATH) as f:
+            data = json.load(f)
+        if isinstance(data, list):
+            return {str(m) for m in data}
+    except (FileNotFoundError, json.JSONDecodeError, OSError, ValueError):
+        pass
+    return set()
+
+
+_MODELS_REJECTING_TEMPERATURE: set[str] = _load_temperature_rejecting_models()
+
+
+def _remember_temperature_rejecting_model(model_name: str) -> None:
+    if model_name in _MODELS_REJECTING_TEMPERATURE:
+        return
+    _MODELS_REJECTING_TEMPERATURE.add(model_name)
+    # Best-effort atomic persist; the in-memory set still works if this fails.
+    try:
+        tmp_path = f"{_QUIRKS_PATH}.tmp"
+        with open(tmp_path, "w") as f:
+            json.dump(sorted(_MODELS_REJECTING_TEMPERATURE), f)
+        os.replace(tmp_path, _QUIRKS_PATH)
+    except OSError:
+        pass
+
 from parlant.adapters.nlp.common import normalize_json_output, record_llm_metrics
 from parlant.adapters.nlp.hugging_face import JinaAIEmbedder
 from parlant.core.engines.alpha.prompt_builder import PromptBuilder
@@ -134,18 +176,35 @@ class LiteLLMSchematicGenerator(BaseSchematicGenerator[T]):
         # Use hint model_name if provided, otherwise fall back to default
         model_name = hints.get("model_name") or self.model_name
 
+        call_kwargs: dict[str, Any] = {
+            "base_url": self.base_url,
+            "api_key": api_key,
+            "messages": [{"role": "user", "content": prompt}],
+            "model": model_name,
+            "max_tokens": 5000,
+            "response_format": {"type": "json_object"},
+            **litellm_api_arguments,
+        }
+
+        # Skip temperature for models already known to reject it.
+        if model_name in _MODELS_REJECTING_TEMPERATURE:
+            call_kwargs.pop("temperature", None)
 
         t_start = time.time()
 
-        response = await self._client.acompletion(
-            base_url=self.base_url,
-            api_key=api_key,
-            messages=[{"role": "user", "content": prompt}],
-            model=model_name,
-            max_tokens=5000,
-            response_format={"type": "json_object"},
-            **litellm_api_arguments,
-        )
+        try:
+            response = await self._client.acompletion(**call_kwargs)
+        except litellm.BadRequestError as e:
+            if "temperature" in str(e).lower() and "temperature" in call_kwargs:
+                self.logger.warning(
+                    f"Model {model_name} rejected `temperature`; retrying without it "
+                    "and skipping it for this model from now on."
+                )
+                _remember_temperature_rejecting_model(model_name)
+                call_kwargs.pop("temperature", None)
+                response = await self._client.acompletion(**call_kwargs)
+            else:
+                raise
 
         t_end = time.time()
 
