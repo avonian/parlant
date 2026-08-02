@@ -72,7 +72,6 @@ def _remember_temperature_rejecting_model(model_name: str) -> None:
         pass
 
 from parlant.adapters.nlp.common import normalize_json_output, record_llm_metrics
-from parlant.adapters.nlp.hugging_face import JinaAIEmbedder
 from parlant.core.engines.alpha.prompt_builder import PromptBuilder
 from parlant.core.loggers import Logger
 from parlant.core.tracer import Tracer
@@ -84,7 +83,7 @@ from parlant.core.nlp.service import (
     SchematicGeneratorHints,
     StreamingTextGeneratorHints,
 )
-from parlant.core.nlp.embedding import BaseEmbedder, Embedder, EmbeddingResult
+from parlant.core.nlp.embedding import BaseEmbedder, Embedder, EmbeddingResult, NullEmbedder
 from parlant.core.nlp.generation import (
     T,
     BaseSchematicGenerator,
@@ -391,6 +390,8 @@ Please set LITELLM_PROVIDER_MODEL_NAME in your environment before running Parlan
 
     @override
     async def get_embedder(self, hints: EmbedderHints = {}) -> Embedder:
+        if os.environ.get("LITELLM_DISABLE_EMBEDDER"):
+            return NullEmbedder()
         if self._embedding_model_name:
             return LiteLLMEmbedder(
                 model_name=self._embedding_model_name,
@@ -399,6 +400,10 @@ Please set LITELLM_PROVIDER_MODEL_NAME in your environment before running Parlan
                 meter=self._meter,
                 base_url=self._base_url,
             )
+        # Imported lazily: this pulls in torch + transformers (~4.6 GB resident
+        # once the Jina model loads), which stateless deployments never need.
+        from parlant.adapters.nlp.hugging_face import JinaAIEmbedder
+
         return JinaAIEmbedder(self.logger, self._tracer, self._meter)
 
     @override
