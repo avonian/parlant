@@ -303,6 +303,47 @@ Base upstream version at time of consolidation: v3.2.0 (upstream/develop @ 34068
 
 ---
 
+## 16. Inline Journeys in the Stateless Engine
+
+**Purpose:** Make journeys work through `/v2/process`. The stateless rewrite (§12–14) built in-memory stores for guidelines and relationships but left journeys stubbed: the DTO had no `journeys` field and the in-memory entity queries returned empty lists, so journey activation, node tools, and branching never ran in stateless mode. nForce now sends journeys inline (nodes, edges, conditions, per-node tools) and the engine consumes them per-request.
+
+**Files added:**
+- `src/parlant/api/inline_guideline_store.py` — `InlineAwareGuidelineStore`, a ContextVar-backed wrapper around the transient `GuidelineStore`. The journey node-selection batch reads condition guidelines via the container's `GuidelineStore` singleton (held fixed at strategy construction), which is empty in stateless mode; this wrapper serves the request's inline guidelines instead. Set per request via `set_inline_guidelines()` in `v2_process.py`; transparent when unset.
+
+**Files modified:**
+- `src/parlant/api/v2_process.py` — Added `InlineJourneyDTO` / node / edge DTOs and a `journeys` request field; `_InMemoryJourneyStore`; per-request `JourneyGuidelineProjection`; registers inline guidelines with the `InlineAwareGuidelineStore` for the duration of the request
+- `src/parlant/core/engines/alpha/in_memory_entity_queries.py` — Un-stubbed `finds_journeys_for_context()`, `find_journey_node_tool_associations()`, and `find_journey_related_guidelines()`; `find_guidelines_for_context()` now runs journey guideline projection; added `_attach_reachable_follow_ups()`, which derives `metadata.journey_node.reachable_follow_ups` from the projected follow-ups so branch selection works without the offline reachability-indexing service (covers direct forks; multi-hop reachability not expanded)
+- `src/parlant/sdk.py` — `override_stores_with_transient_versions` wraps the transient `GuidelineDocumentStore` in `InlineAwareGuidelineStore`. It must live here: Lagom forbids redefining a binding (`DuplicateDefinition`), and the SDK defines stores before `bin/server.py` loads the app, so overrides in `nforce_server.py` / `bin/server.py` do not work
+
+**Key decisions:**
+- Follows the §13 precedent: per-request in-memory stores, engine untouched
+- No-ops when a request carries no inline journeys (transition-safe)
+- Verified end-to-end in stateless mode: trigger-guideline activation → journey node selection → node tool execution → two-way branching on condition edges
+
+---
+
+## 17. LiteLLM Runtime Quirks & Model Compatibility
+
+**Purpose:** Keep the LiteLLM path working across provider/model changes without code edits per model.
+
+**Files modified:**
+- `src/parlant/adapters/nlp/litellm_service.py`:
+  - **Temperature quirk learning** — some models reject the `temperature` param outright with a 400. On such an error the adapter drops `temperature`, retries, and persists the model name to `.litellm_temperature_quirks.json` (path override via `LITELLM_TEMPERATURE_QUIRKS_PATH`) so later calls skip it up front. The quirks file is gitignored.
+  - **`LITELLM_DISABLE_EMBEDDER`** — stateless deployments never invoke the embedder, but `get_embedder()`'s Jina fallback eagerly loaded torch + jina-embeddings-v2 at boot (~4.6 GB resident). With the flag set, `NullEmbedder` is returned and the `hugging_face` import is lazy so torch never loads. Default behavior without the flag is unchanged.
+  - **GPT-5.6 reasoning opt-out** — GPT-5.6 models 400 on `/v1/chat/completions` when function tools are combined with reasoning ("... use /v1/responses or set reasoning_effort to 'none'"). `do_generate()` sends `reasoning_effort="none"` for `gpt-5.6*` models (pre-5.6 models defaulted to none).
+- `src/parlant/core/engines/alpha/simple_agent.py` — Same `reasoning_effort="none"` opt-out in `_run_tool_loop()`, which calls `litellm.acompletion()` directly with the agent's function tools (see §3) and hit the identical 400.
+
+---
+
+## 18. /v2/process Latency Instrumentation
+
+**Purpose:** Diagnose where time goes inside a `/v2/process` request.
+
+**Files modified:**
+- `src/parlant/api/v2_process.py` — Captures milestones (`dto_to_domain`, `entity_queries_built`, `engine_ready`, `first_engine_event`, `first_message_event`, `engine_complete`) as ms-since-request and logs them alongside the engine-completed line. Gated on `LATENCY_TRACE=true` so prod stays quiet.
+
+---
+
 ## Merge Strategy
 
 When pulling upstream updates:
@@ -317,8 +358,10 @@ Areas most likely to conflict:
 2. **`agents.py` (core)** — New fields (playbook_id, model_name, composition_mode)
 3. **`app.py` / `server.py`** — Route mounting, middleware bypass for SSE, and uvicorn config changes
 4. **`sdk.py`** — Extended SDK for playbooks, simple agent, test suites
-5. **`litellm_service.py`** — Overlapping fixes with upstream
+5. **`litellm_service.py`** — Overlapping fixes with upstream, plus fork-only quirk handling (§8, §17)
 6. **`tool_caller.py`** — Simple agent tool calling additions
 7. **`core/nlp/generation.py`** — `BaseSchematicGenerator.generate()` per-request model reporting (§15)
+8. **`v2_process.py` / `in_memory_entity_queries.py`** — Fork-only files, but they track engine-internal interfaces (`EntityQueries`, journey projection, node-selection metadata) that upstream may reshape (§12–13, §16, §18)
+9. **`sdk.py`** — Now also wraps the transient `GuidelineDocumentStore` in `InlineAwareGuidelineStore` inside `override_stores_with_transient_versions` (§16) — a store-definition change upstream touches regularly
 
 Note: §12–14 make `/v2/process` fully stateless and eliminate PostgreSQL from `nforce_server.py`. Upstream CRUD routers are kept intact but run against empty transient stores. Conflicts are unlikely unless upstream restructures the middleware stack, uvicorn config, or `RelationalResolver` wiring.
