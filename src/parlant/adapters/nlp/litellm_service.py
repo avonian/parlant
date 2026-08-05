@@ -189,6 +189,13 @@ class LiteLLMSchematicGenerator(BaseSchematicGenerator[T]):
         if model_name in _MODELS_REJECTING_TEMPERATURE:
             call_kwargs.pop("temperature", None)
 
+        # GPT-5.6 models 400 on our /v1/chat/completions calls: "Function tools
+        # with reasoning_effort are not supported ... use /v1/responses or set
+        # reasoning_effort to 'none'". Disable reasoning explicitly (pre-5.6
+        # models defaulted to none).
+        if model_name.split("/")[-1].startswith("gpt-5.6"):
+            call_kwargs.setdefault("reasoning_effort", "none")
+
         t_start = time.time()
 
         try:

@@ -320,11 +320,21 @@ class SimpleAgentHook:
 
             # Call LLM — prefer agent-specific model, fall back to global default
             model = context.agent.model_name or self._model
+
+            # GPT-5.6 models 400 on /v1/chat/completions when function tools are
+            # combined with reasoning ("... use /v1/responses or set
+            # reasoning_effort to 'none'"). Disable reasoning explicitly
+            # (pre-5.6 models defaulted to none).
+            extra_kwargs: dict[str, Any] = {}
+            if model.split("/")[-1].startswith("gpt-5.6"):
+                extra_kwargs["reasoning_effort"] = "none"
+
             response = await litellm.acompletion(
                 model=model,
                 messages=messages,
                 tools=tool_schemas,
                 base_url=self._base_url,
+                **extra_kwargs,
             )
 
             choice = response.choices[0].message
